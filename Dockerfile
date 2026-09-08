@@ -67,20 +67,19 @@ RUN apt-get update \
 # ---------------------------------------------------------------------------
 # Non-root user with matching UID/GID
 #   The numeric UID/GID is what matters for bind-mount ownership (it matches
-#   the external Unraid user), the group NAME does not. If a system group
-#   already owns the GID (e.g. "users" is GID 100 on Ubuntu), reuse it as-is.
+#   the external Unraid user). Base images often already ship a skeleton user
+#   at UID 1000 (e.g. 'ubuntu' on Ubuntu 24.04); remove it and create our own
+#   so the login name is exactly ${PI_USER_NAME} (required by the USER step).
 # ---------------------------------------------------------------------------
 RUN if ! getent group ${PI_GID} >/dev/null; then \
         groupadd -g ${PI_GID} "${PI_USER_NAME}"; \
     fi
 RUN EXISTING_USER="$(getent passwd ${PI_UID} | cut -d: -f1 || true)"; \
     if [ -n "${EXISTING_USER}" ]; then \
-        usermod -u ${PI_UID} -g ${PI_GID} -d "${PI_USER_HOME}" -m -s /bin/bash "${EXISTING_USER}"; \
-        usermod -a -G sudo "${EXISTING_USER}"; \
-    else \
-        useradd -u ${PI_UID} -g ${PI_GID} -G sudo -m -d "${PI_USER_HOME}" \
-                -s /bin/bash "${PI_USER_NAME}"; \
-    fi
+        userdel "${EXISTING_USER}"; \
+    fi; \
+    useradd -u ${PI_UID} -g ${PI_GID} -G sudo -m -d "${PI_USER_HOME}" \
+            -s /bin/bash "${PI_USER_NAME}"
 RUN chown -R "${PI_UID}:${PI_GID}" "${PI_USER_HOME}"
 
 WORKDIR "${PI_USER_HOME}"
