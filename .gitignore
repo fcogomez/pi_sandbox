@@ -1,0 +1,18 @@
+# env
+.env
+.env.*
+!.env.example
+
+# node / build
+node_modules/
+dist/
+*.tsbuildinfo
+
+# pi runtime
+.workspace/
+sessions/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db

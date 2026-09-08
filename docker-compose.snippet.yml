@@ -1,0 +1,36 @@
+  # Paste into an existing docker-compose.yml
+  pi-sandbox:
+    image: pi-sandbox:latest
+    container_name: pi-sandbox
+    build:
+      context: .
+      args:
+        PI_UID: ${PI_UID:-1000}
+        PI_GID: ${PI_GID:-100}
+        NODE_MAJOR_VERSION: ${NODE_MAJOR_VERSION:-26}
+        PI_NPM_VERSION: ${PI_NPM_VERSION:-latest}
+    restart: unless_started
+    environment:
+      PI_CODING_AGENT_DIR: /home/pi/.pi/agent
+      WORKSPACE_DIR: /home/pi/workspace
+      PI_LLM_PROVIDER_NAME: ${PI_LLM_PROVIDER_NAME:-vllm}
+      PI_LLM_BASE_URL: ${PI_LLM_BASE_URL:-http://vLLM_Qwen3.8_27B_BF16:8000/v1}
+      PI_LLM_API: ${PI_LLM_API:-openai-completions}
+      PI_LLM_API_KEY: ${PI_LLM_API_KEY:-nerdtastic}
+      PI_LLM_MODEL_ID: ${PI_LLM_MODEL_ID:-Qwen/Qwen3.8-27B}
+      PI_LLM_MODEL_NAME: ${PI_LLM_MODEL_NAME:-Qwen/Qwen3.8-27B (vLLM)}
+      PI_LLM_REASONING: ${PI_LLM_REASONING:-true}
+      PI_LLM_INPUT: ${PI_LLM_INPUT:-text}
+      PI_LLM_CONTEXT_WINDOW: ${PI_LLM_CONTEXT_WINDOW:-262144}
+      PI_LLM_MAX_TOKENS: ${PI_LLM_MAX_TOKENS:-32768}
+      PI_OFFLINE: 1
+      PI_SKIP_VERSION_CHECK: 1
+      PI_TELEMETRY: 0
+    volumes:
+      - ${HOST_WORKSPACE:-/mnt/user/appdata/pi/workspace}:/home/pi/workspace
+      - pi-agent-home:/home/pi/.pi/agent
+    working_dir: /home/pi/workspace
+    entrypoint: ["/opt/pi/entrypoint.sh"]
+    command: ["--version"]
+    networks:
+      - traefik

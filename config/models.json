@@ -1,0 +1,20 @@
+{
+  "providers": {
+    "vllm": {
+      "baseUrl": "http://vLLM_Qwen3.8_27B_BF16:8000/v1",
+      "api": "openai-completions",
+      "apiKey": "nerdtastic",
+      "models": [
+        {
+          "id": "Qwen/Qwen3.8-27B",
+          "name": "Qwen/Qwen3.8-27B (vLLM)",
+          "reasoning": true,
+          "input": ["text"],
+          "contextWindow": 262144,
+          "maxTokens": 32768,
+          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+        }
+      ]
+    }
+  }
+}
