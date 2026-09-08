@@ -75,7 +75,7 @@ RUN if ! getent group ${PI_GID} >/dev/null; then \
     fi
 RUN EXISTING_USER="$(getent passwd ${PI_UID} | cut -d: -f1 || true)"; \
     if [ -n "${EXISTING_USER}" ]; then \
-        usermod -u ${PI_UID} -g ${PI_GID} -d "${PI_USER_HOME}" -s /bin/bash "${EXISTING_USER}"; \
+        usermod -u ${PI_UID} -g ${PI_GID} -d "${PI_USER_HOME}" -m -s /bin/bash "${EXISTING_USER}"; \
         usermod -a -G sudo "${EXISTING_USER}"; \
     else \
         useradd -u ${PI_UID} -g ${PI_GID} -G sudo -m -d "${PI_USER_HOME}" \
