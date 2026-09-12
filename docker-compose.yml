@@ -41,6 +41,7 @@ services:
     volumes:
       - ${HOST_WORKSPACE:-/mnt/user/appdata/pi/workspace}:/home/pi/workspace
       - pi-agent-home:/home/pi/.pi/agent
+      - ./memory:/home/pi/memory
     working_dir: /home/pi/workspace
     entrypoint: ["/opt/pi/entrypoint.sh"]
     command: ["--version"]
