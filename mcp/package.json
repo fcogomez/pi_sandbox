@@ -1,0 +1,15 @@
+{
+  "name": "pi-sandbox-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "MCP bridge (HTTP/StreamableHTTP) exposing the pi coding agent as a serial task queue",
+  "type": "commonjs",
+  "main": "server.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "zod": "^3.25.0"
+  }
+}

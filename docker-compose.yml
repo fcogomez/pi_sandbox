@@ -1,0 +1,94 @@
+# Pi coding agent — sandbox (standalone)
+#
+# Interactive / one-shot:
+#   docker compose run --rm -it pi-sandbox bash
+#   docker compose run --rm pi-sandbox -p "your task"
+#   docker compose run --rm pi-sandbox -p "task" --model vllm/some-model
+#
+# Persistent MCP bridge (for Hermes delegation):
+#   docker compose up -d pi-sandbox-mcp
+#   Requires PI_MCP_API_KEY set (in .env) — the bridge refuses to start open.
+#
+# All PI_LLM_* env vars can be overridden here or in .env.
+# PI_UID / PI_GID are BUILD ARGS (set the in-container user); rebuild when changed.
+
+services:
+  pi-sandbox:
+    image: pi-sandbox:${PI_TAG:-latest}
+    container_name: pi-sandbox
+    build:
+      context: .
+      args:
+        PI_UID: ${PI_UID:-1000}
+        PI_GID: ${PI_GID:-100}
+        PI_USER_NAME: ${PI_USER_NAME:-pi}
+        NODE_MAJOR_VERSION: ${NODE_MAJOR_VERSION:-26}
+        PI_NPM_VERSION: ${PI_NPM_VERSION:-latest}
+    restart: unless_started
+    environment:
+      PI_CODING_AGENT_DIR: /home/pi/.pi/agent
+      WORKSPACE_DIR: /home/pi/workspace
+      PI_LLM_PROVIDER_NAME: ${PI_LLM_PROVIDER_NAME:-vllm}
+      PI_LLM_BASE_URL: ${PI_LLM_BASE_URL:-http://your-llm-host:8000/v1}
+      PI_LLM_API: ${PI_LLM_API:-openai-completions}
+      PI_LLM_API_KEY: ${PI_LLM_API_KEY}
+      PI_LLM_MODEL_ID: ${PI_LLM_MODEL_ID:-your-org/your-model}
+      PI_LLM_MODEL_NAME: ${PI_LLM_MODEL_NAME:-your-org/your-model (example)}
+      PI_LLM_REASONING: ${PI_LLM_REASONING:-true}
+      PI_LLM_INPUT: ${PI_LLM_INPUT:-text}
+      PI_LLM_CONTEXT_WINDOW: ${PI_LLM_CONTEXT_WINDOW:-262144}
+      PI_LLM_MAX_TOKENS: ${PI_LLM_MAX_TOKENS:-32768}
+      PI_OFFLINE: 1
+      PI_SKIP_VERSION_CHECK: 1
+      PI_TELEMETRY: 0
+    volumes:
+      - ${HOST_WORKSPACE:-/path/to/your/workspace}:/home/pi/workspace
+      - pi-agent-home:/home/pi/.pi/agent
+      - ./memory:/home/pi/memory
+    working_dir: /home/pi/workspace
+    entrypoint: ["/opt/pi/entrypoint.sh"]
+    command: ["--version"]
+
+  # Persistent MCP bridge daemon (Hermes delegation). Long-running.
+  pi-sandbox-mcp:
+    image: pi-sandbox:${PI_TAG:-latest}
+    container_name: pi-sandbox-mcp
+    restart: unless_started
+    environment:
+      PI_CODING_AGENT_DIR: /home/pi/.pi/agent
+      WORKSPACE_DIR: /home/pi/workspace
+      PI_LLM_PROVIDER_NAME: ${PI_LLM_PROVIDER_NAME:-vllm}
+      PI_LLM_BASE_URL: ${PI_LLM_BASE_URL:-http://your-llm-host:8000/v1}
+      PI_LLM_API: ${PI_LLM_API:-openai-completions}
+      PI_LLM_API_KEY: ${PI_LLM_API_KEY}
+      PI_LLM_MODEL_ID: ${PI_LLM_MODEL_ID:-your-org/your-model}
+      PI_LLM_MODEL_NAME: ${PI_LLM_MODEL_NAME:-your-org/your-model (example)}
+      PI_LLM_REASONING: ${PI_LLM_REASONING:-true}
+      PI_LLM_INPUT: ${PI_LLM_INPUT:-text}
+      PI_LLM_CONTEXT_WINDOW: ${PI_LLM_CONTEXT_WINDOW:-262144}
+      PI_LLM_MAX_TOKENS: ${PI_LLM_MAX_TOKENS:-32768}
+      PI_OFFLINE: 1
+      PI_SKIP_VERSION_CHECK: 1
+      PI_TELEMETRY: 0
+      PI_MCP_API_KEY: ${PI_MCP_API_KEY}
+      PI_MCP_PORT: ${PI_MCP_PORT:-3103}
+      PI_TIMEOUT_SECONDS: ${PI_TIMEOUT_SECONDS:-3600}
+    volumes:
+      - ${HOST_WORKSPACE:-/path/to/your/workspace}:/home/pi/workspace
+      - pi-agent-home:/home/pi/.pi/agent
+      - ./memory:/home/pi/memory
+    working_dir: /home/pi/workspace
+    entrypoint: ["/opt/pi/entrypoint.sh"]
+    command: ["mcp"]
+    # Reached via Docker DNS on the traefik network (http://pi-sandbox-mcp:3103).
+    # Uncomment to also expose on the LAN (not required for Hermes):
+    # ports:
+    #   - "${PI_MCP_PORT:-3103}:${PI_MCP_PORT:-3103}"
+
+volumes:
+  pi-agent-home:
+
+networks:
+  default:
+    name: traefik
+    external: true

@@ -1,0 +1,24 @@
+# env
+.env
+.env.*
+!.env.example
+# MCP bridge API key (secret — never commit)
+.pi-mcp.key
+
+# node / build
+node_modules/
+dist/
+*.tsbuildinfo
+
+# pi runtime
+.workspace/
+sessions/
+*.log
+
+# shared memory (local only — may reference private projects)
+memory/*
+!memory/README.md
+
+# OS
+.DS_Store
+Thumbs.db

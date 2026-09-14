@@ -1,0 +1,20 @@
+{
+  "providers": {
+    "vllm": {
+      "baseUrl": "http://your-llm-host:8000/v1",
+      "api": "openai-completions",
+      "apiKey": "<your-api-key>",
+      "models": [
+        {
+          "id": "your-org/your-model",
+          "name": "your-org/your-model (example)",
+          "reasoning": true,
+          "input": ["text"],
+          "contextWindow": 262144,
+          "maxTokens": 32768,
+          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+        }
+      ]
+    }
+  }
+}

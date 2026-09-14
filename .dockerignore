@@ -1,0 +1,14 @@
+.git
+.env
+.env.*
+!.env.example
+node_modules
+mcp/node_modules
+dist
+*.log
+README.md
+docker-compose.yml
+docker-compose.snippet.yml
+.pi-mcp.key
+# shared memory (local only)
+memory/

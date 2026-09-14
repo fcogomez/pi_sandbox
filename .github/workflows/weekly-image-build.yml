@@ -1,0 +1,91 @@
+# Weekly pi-sandbox image build
+#
+# Every Monday (and on manual dispatch) this workflow:
+#   1. Resolves the latest @earendil-works/pi-coding-agent version from npm
+#   2. Skips if an image with that version tag is already on GHCR
+#   3. Builds the image with PI_NPM_VERSION pinned to that version
+#   4. Pushes ghcr.io/<owner>/pi_sandbox:<pi-version> and :latest
+#
+# Required repository secret for scheduled runs:
+#   PACKAGES_TOKEN — a PAT (or fine-grained token) with the "write:packages"
+#   scope. Scheduled workflow runs only receive a READ-ONLY GITHUB_TOKEN,
+#   so pushing requires the secret. Manual (workflow_dispatch) runs fall
+#   back to GITHUB_TOKEN automatically.
+
+name: Weekly image build
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: weekly-image-build
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Resolve latest pi-coding-agent version
+        id: pi
+        run: |
+          VERSION="$(npm view @earendil-works/pi-coding-agent version)"
+          echo "Latest @earendil-works/pi-coding-agent: ${VERSION}"
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+
+      - name: Check whether this version is already published
+        id: check
+        run: |
+          REPO_PATH="${IMAGE#ghcr.io/}"
+          TOKEN="$(curl -sf -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "${REGISTRY}/token?scope=repository:${REPO_PATH}:pull" | jq -r .token)"
+          EXISTS="$(curl -sf -H "Authorization: Bearer ${TOKEN}" \
+            "${REGISTRY}/v2/${REPO_PATH}/tags/list?n=1000" \
+            | jq -r --arg v "${{ steps.pi.outputs.version }}" '.tags[]? | select(. == $v)')"
+          if [ -n "${EXISTS}" ]; then
+            echo "::warning::${IMAGE}:${{ steps.pi.outputs.version }} already published — skipping build (no new pi release this week)."
+            echo "skip=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "New version — building ${IMAGE}:${{ steps.pi.outputs.version }}"
+          fi
+
+      - name: Set up Docker Buildx
+        if: steps.check.outputs.skip != 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        if: steps.check.outputs.skip != 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          # PACKAGES_TOKEN (PAT, write:packages) for scheduled runs;
+          # falls back to the workflow's GITHUB_TOKEN for manual runs.
+          password: ${{ secrets.PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        if: steps.check.outputs.skip != 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.pi.outputs.version }}
+            ${{ env.IMAGE }}:latest
+          build-args: |
+            PI_NPM_VERSION=${{ steps.pi.outputs.version }}
+            PI_UID=1000
+            PI_GID=100
