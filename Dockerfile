@@ -44,7 +44,7 @@ ARG NODE_MAJOR_VERSION=26
 ARG NODE_INSTALL_DIR=${PI_USER_HOME}/.local/share/nodejs
 ARG PI_NPM_VERSION=latest
 # Gradle (Kotlin/Java builds, e.g. API services); version pinned deliberately.
-# Gradle 9.x requires Java 17+; the image ships OpenJDK 21.
+# Gradle 9.1.0+ is required to RUN on Java 25; the image ships OpenJDK 25.
 ARG GRADLE_VERSION=9.7.1
 ARG GRADLE_SHA256=acd53f1edaf02f1a8ff99879f8a34b302661a057d9b063ae9e35b552f804d20a
 ARG GRADLE_INSTALL_DIR=${PI_USER_HOME}/.local/share/gradle
@@ -61,7 +61,7 @@ RUN apt-get update \
         git \
         libatomic1 \
         man-db \
-        openjdk-21-jdk-headless \
+        openjdk-25-jdk-headless \
         python3 \
         python3-pip \
         python3-venv \
@@ -77,7 +77,7 @@ RUN apt-get update \
     && java -version 2>&1 | head -1
 
 # JAVA_HOME points at the apt OpenJDK install (stable, major-version-based path).
-ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+ENV JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64
 
 # ---------------------------------------------------------------------------
 # Non-root user with matching UID/GID
@@ -117,7 +117,7 @@ RUN NODE_DIST_FILE="$(curl -s https://nodejs.org/dist/latest-v${NODE_MAJOR_VERSI
 # ---------------------------------------------------------------------------
 # Gradle (installed to $HOME so the non-root user owns it)
 #   Version + sha256 pinned via build args; bump both together when upgrading.
-#   Gradle 9.x needs Java 17+ — satisfied by the OpenJDK 21 above.
+#   Gradle 9.1.0+ is required to run on Java 25 — satisfied by OpenJDK 25 above.
 # ---------------------------------------------------------------------------
 ENV PATH="${GRADLE_INSTALL_DIR}/gradle-${GRADLE_VERSION}/bin:${PATH}"
 RUN GRADLE_ZIP="gradle-${GRADLE_VERSION}-bin.zip" \
