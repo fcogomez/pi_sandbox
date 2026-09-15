@@ -46,6 +46,11 @@ jobs:
           echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
 
       - name: Check whether this version is already published
+        # Scheduled runs only: a new pi release is what makes the weekly build
+        # meaningful. Manual (workflow_dispatch) runs ALWAYS rebuild — you are
+        # explicitly requesting an image for the current repo state (e.g. our own
+        # code changed but the pi version did not).
+        if: github.event_name == 'schedule'
         id: check
         run: |
           REPO_PATH="${IMAGE#ghcr.io/}"
