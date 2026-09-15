@@ -13,7 +13,7 @@ variables — override at build time (`--build-arg`) or runtime (`-e` / compose
 
 | File | Purpose |
 |------|---------|
-| `Dockerfile` | ubuntu:24.04, non-root user (matching UID/GID), Node 26, Python 3 (+pip, venv), global `pi` install, bundled MCP bridge (`mcp/`) |
+| `Dockerfile` | ubuntu:24.04, non-root user (matching UID/GID), Node 26, Python 3 (+pip, venv), OpenJDK 21 + Gradle, global `pi` install, bundled MCP bridge (`mcp/`) |
 | `config/entrypoint.sh` | Startup script: generates `models.json` from env vars, then `exec pi "$@"` — or the MCP bridge daemon in `mcp` mode |
 | `config/models.json` | Reference example of the generated `models.json` (not loaded directly) |
 | `mcp/server.js` | MCP bridge (HTTP/StreamableHTTP, Node + `@modelcontextprotocol/sdk`): exposes pi as a serial task queue to MCP clients (Hermes) |

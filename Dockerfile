@@ -43,6 +43,11 @@ ARG PI_LOCAL_BIN=${PI_USER_HOME}/.local/bin
 ARG NODE_MAJOR_VERSION=26
 ARG NODE_INSTALL_DIR=${PI_USER_HOME}/.local/share/nodejs
 ARG PI_NPM_VERSION=latest
+# Gradle (Kotlin/Java builds, e.g. API services); version pinned deliberately.
+# Gradle 9.x requires Java 17+; the image ships OpenJDK 21.
+ARG GRADLE_VERSION=9.7.1
+ARG GRADLE_SHA256=acd53f1edaf02f1a8ff99879f8a34b302661a057d9b063ae9e35b552f804d20a
+ARG GRADLE_INSTALL_DIR=${PI_USER_HOME}/.local/share/gradle
 
 # ---------------------------------------------------------------------------
 # APT dependencies
@@ -56,17 +61,23 @@ RUN apt-get update \
         git \
         libatomic1 \
         man-db \
+        openjdk-21-jdk-headless \
         python3 \
         python3-pip \
         python3-venv \
         ripgrep \
         sudo \
+        unzip \
         vim \
         wget \
         xz-utils \
     && apt-get clean all \
     && rm -rf /var/lib/apt/lists/* \
-    && python3 --version
+    && python3 --version \
+    && java -version 2>&1 | head -1
+
+# JAVA_HOME points at the apt OpenJDK install (stable, major-version-based path).
+ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
 
 # ---------------------------------------------------------------------------
 # Non-root user with matching UID/GID
@@ -102,6 +113,20 @@ RUN NODE_DIST_FILE="$(curl -s https://nodejs.org/dist/latest-v${NODE_MAJOR_VERSI
     && rm -f "${NODE_DIST_FILE}" \
     && node --version \
     && npm --version
+
+# ---------------------------------------------------------------------------
+# Gradle (installed to $HOME so the non-root user owns it)
+#   Version + sha256 pinned via build args; bump both together when upgrading.
+#   Gradle 9.x needs Java 17+ — satisfied by the OpenJDK 21 above.
+# ---------------------------------------------------------------------------
+ENV PATH="${GRADLE_INSTALL_DIR}/gradle-${GRADLE_VERSION}/bin:${PATH}"
+RUN GRADLE_ZIP="gradle-${GRADLE_VERSION}-bin.zip" \
+    && curl -s -o "/tmp/${GRADLE_ZIP}" "https://services.gradle.org/distributions/${GRADLE_ZIP}" \
+    && echo "${GRADLE_SHA256}  /tmp/${GRADLE_ZIP}" | sha256sum -c - \
+    && mkdir -p "${GRADLE_INSTALL_DIR}" \
+    && unzip -q "/tmp/${GRADLE_ZIP}" -d "${GRADLE_INSTALL_DIR}" \
+    && rm -f "/tmp/${GRADLE_ZIP}" \
+    && gradle --version
 
 # ---------------------------------------------------------------------------
 # Pi coding agent
