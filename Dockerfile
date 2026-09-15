@@ -56,13 +56,17 @@ RUN apt-get update \
         git \
         libatomic1 \
         man-db \
+        python3 \
+        python3-pip \
+        python3-venv \
         ripgrep \
         sudo \
         vim \
         wget \
         xz-utils \
     && apt-get clean all \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && python3 --version
 
 # ---------------------------------------------------------------------------
 # Non-root user with matching UID/GID
