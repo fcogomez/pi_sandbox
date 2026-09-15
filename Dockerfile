@@ -121,7 +121,7 @@ RUN NODE_DIST_FILE="$(curl -s https://nodejs.org/dist/latest-v${NODE_MAJOR_VERSI
 # ---------------------------------------------------------------------------
 ENV PATH="${GRADLE_INSTALL_DIR}/gradle-${GRADLE_VERSION}/bin:${PATH}"
 RUN GRADLE_ZIP="gradle-${GRADLE_VERSION}-bin.zip" \
-    && curl -s -o "/tmp/${GRADLE_ZIP}" "https://services.gradle.org/distributions/${GRADLE_ZIP}" \
+    && curl -sL -o "/tmp/${GRADLE_ZIP}" "https://services.gradle.org/distributions/${GRADLE_ZIP}" \
     && echo "${GRADLE_SHA256}  /tmp/${GRADLE_ZIP}" | sha256sum -c - \
     && mkdir -p "${GRADLE_INSTALL_DIR}" \
     && unzip -q "/tmp/${GRADLE_ZIP}" -d "${GRADLE_INSTALL_DIR}" \
