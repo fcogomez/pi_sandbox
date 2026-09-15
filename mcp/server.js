@@ -231,21 +231,55 @@ function runPi(task) {
   });
 }
 
-/** Parse pi --mode json output: return { ok, finalText, error }. */
+/**
+ * Parse `pi -p --mode json` output (verified against pi 0.85.1).
+ *
+ * Real event stream (JSONL):
+ *   session, agent_start, turn_start,
+ *   message_start / message_update (xN) / message_end   (per message; message has role+content[])
+ *   turn_end  { message: assistant msg, toolResults }   (per turn; carries the turn's assistant msg)
+ *   agent_end { messages: [all msgs], willRetry }       (final; last assistant msg = answer)
+ *   agent_settled
+ * Content blocks: { type: "thinking" | "text" | "toolCall" | ..., text? }.
+ * Final answer = concatenated `text` blocks of the LAST assistant message.
+ *
+ * Returns { ok, finalText, error }.
+ */
+function textFromContent(content) {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
+      .map((b) => b.text)
+      .join('');
+  }
+  return '';
+}
+
 function parsePiOutput(stdout) {
   const lines = stdout.split('\n').map((l) => l.trim()).filter(Boolean);
   let finalText = '';
   let error = '';
+  let sawAgentEnd = false;
+
   for (const line of lines) {
     let ev;
     try { ev = JSON.parse(line); } catch (_) { continue; }
     const t = ev.type || '';
-    if (t === 'message') {
+
+    if (t === 'message_end' || t === 'turn_end') {
+      const m = ev.message || {};
+      if (m.role === 'assistant') finalText = textFromContent(m.content);
+    } else if (t === 'agent_end') {
+      sawAgentEnd = true;
+      const msgs = Array.isArray(ev.messages) ? ev.messages : [];
+      const assistant = [...msgs].reverse().find((m) => m && m.role === 'assistant');
+      if (assistant) finalText = textFromContent(assistant.content);
+    }
+    // Legacy / alternate shapes (kept for forward/backward compatibility):
+    else if (t === 'message') {
       const m = ev.message || ev;
-      if (m.role === 'assistant' && typeof m.content === 'string') finalText = m.content;
-      else if (m.role === 'assistant' && Array.isArray(m.content)) {
-        finalText = m.content.map((c) => (c && typeof c.text === 'string' ? c.text : '')).join('');
-      }
+      if (m.role === 'assistant') finalText = textFromContent(m.content);
     } else if (t === 'result') {
       if (typeof ev.result === 'string') finalText = ev.result;
       else if (ev.result && typeof ev.result.text === 'string') finalText = ev.result.text;
@@ -254,7 +288,13 @@ function parsePiOutput(stdout) {
       error = typeof ev.message === 'string' ? ev.message : JSON.stringify(ev).slice(0, 500);
     }
   }
-  const ok = !error && lines.length > 0;
+
+  let ok = !error && lines.length > 0;
+  // No events at all, or an agent_end without any assistant text => suspicious.
+  if (sawAgentEnd && !finalText.trim()) {
+    ok = false;
+    error = error || 'pi finished but produced no assistant text';
+  }
   if (finalText.length > MAX_OUTPUT) {
     finalText = finalText.slice(0, MAX_OUTPUT) + `\n[truncated at ${MAX_OUTPUT} chars]`;
   }
