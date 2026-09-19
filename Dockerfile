@@ -139,6 +139,13 @@ RUN npm install -g --ignore-scripts \
     && pi update --extensions
 
 # ---------------------------------------------------------------------------
+# Hindsight-pi extension (long-term memory via a Hindsight server)
+#   Config: ~/.hindsight/config.json or HINDSIGHT_* env vars (see .env.example).
+#   Bump the version deliberately; /hindsight:doctor verifies connectivity.
+# ---------------------------------------------------------------------------
+RUN pi install npm:@walodayeet/hindsight-pi@0.4.0
+
+# ---------------------------------------------------------------------------
 # MCP bridge (mcp mode)
 #   Node HTTP server exposing pi as MCP tools (Hermes -> pi_sandbox_mcp_*).
 #   Runs as the non-root ${PI_USER_NAME}; port 3103, bearer-key auth.
@@ -181,6 +188,12 @@ ENV PI_SKIP_VERSION_CHECK=1
 ENV PI_TELEMETRY=0
 ENV AI_AGENT=pi
 ENV PI_CODING_AGENT=true
+
+# Hindsight (long-term memory) — placeholders only; override at runtime.
+# Same API key as the Hindsight server's HINDSIGHT_TENANT_API_KEY.
+ENV HINDSIGHT_BASE_URL=http://your-hindsight-host:8888
+ENV HINDSIGHT_API_KEY=***
+ENV HINDSIGHT_BANK_ID=
 
 # ---------------------------------------------------------------------------
 # Entrypoint script — generates models.json then execs pi
