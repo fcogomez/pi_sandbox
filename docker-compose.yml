@@ -41,12 +41,12 @@ services:
       PI_OFFLINE: 1
       PI_SKIP_VERSION_CHECK: 1
       PI_TELEMETRY: 0
-      # Hindsight long-term memory (shared bank with Hermes — same key as the
-      # hindsight server's HINDSIGHT_TENANT_API_KEY). Leave HINDSIGHT_BANK_ID
-      # empty to let the extension use its default bank.
-      HINDSIGHT_BASE_URL: ${HINDSIGHT_BASE_URL:-http://your-hindsight-host:8888}
+      # Hindsight long-term memory (official CLI; shared bank with Hermes —
+      # same key as the hindsight server's HINDSIGHT_TENANT_API_KEY).
+      # HINDSIGHT_BANK_ID: one shared bank, named here (default "agents").
+      HINDSIGHT_API_URL: ${HINDSIGHT_API_URL:-http://your-hindsight-host:8888}
       HINDSIGHT_API_KEY: ${HINDSIGHT_API_KEY}
-      HINDSIGHT_BANK_ID: ${HINDSIGHT_BANK_ID:-}
+      HINDSIGHT_BANK_ID: ${HINDSIGHT_BANK_ID:-agents}
     volumes:
       - ${HOST_WORKSPACE:-/path/to/your/workspace}:/home/pi/workspace
       - pi-agent-home:/home/pi/.pi/agent
@@ -80,11 +80,11 @@ services:
       PI_MCP_API_KEY: ${PI_MCP_API_KEY}
       PI_MCP_PORT: ${PI_MCP_PORT:-3103}
       PI_TIMEOUT_SECONDS: ${PI_TIMEOUT_SECONDS:-3600}
-      # Hindsight long-term memory (shared bank with Hermes — same key as the
-      # hindsight server's HINDSIGHT_TENANT_API_KEY).
-      HINDSIGHT_BASE_URL: ${HINDSIGHT_BASE_URL:-http://your-hindsight-host:8888}
+      # Hindsight long-term memory (official CLI; shared bank with Hermes —
+      # same key as the hindsight server's HINDSIGHT_TENANT_API_KEY).
+      HINDSIGHT_API_URL: ${HINDSIGHT_API_URL:-http://your-hindsight-host:8888}
       HINDSIGHT_API_KEY: ${HINDSIGHT_API_KEY}
-      HINDSIGHT_BANK_ID: ${HINDSIGHT_BANK_ID:-}
+      HINDSIGHT_BANK_ID: ${HINDSIGHT_BANK_ID:-agents}
     volumes:
       - ${HOST_WORKSPACE:-/path/to/your/workspace}:/home/pi/workspace
       - pi-agent-home:/home/pi/.pi/agent

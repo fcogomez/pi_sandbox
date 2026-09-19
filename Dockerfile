@@ -139,11 +139,26 @@ RUN npm install -g --ignore-scripts \
     && pi update --extensions
 
 # ---------------------------------------------------------------------------
-# Hindsight-pi extension (long-term memory via a Hindsight server)
-#   Config: ~/.hindsight/config.json or HINDSIGHT_* env vars (see .env.example).
-#   Bump the version deliberately; /hindsight:doctor verifies connectivity.
+# Hindsight CLI (long-term memory, shared bank with Hermes)
+#   Option B: official prebuilt binary from the Hindsight repo releases
+#   (github.com/vectorize-io/hindsight). Version + sha256 pinned via build
+#   args — verify the checksum BEFORE a CI build (services.gradle.org-style
+#   301/302 redirects are handled below). Bump both together to upgrade.
+#   The entrypoint tells pi to call `hindsight memory recall/retain`.
+#   Env: HINDSIGHT_API_URL / HINDSIGHT_API_KEY / HINDSIGHT_BANK_ID.
 # ---------------------------------------------------------------------------
-RUN pi install npm:@walodayeet/hindsight-pi@0.4.0
+ARG HINDSIGHT_CLI_VERSION=0.10.0
+ARG HINDSIGHT_CLI_SHA256=02160d71a0ecafda1df7cceab4446362d76500dfa2c3b768d773b86e423e8f19
+ARG HINDSIGHT_CLI_URL=https://github.com/vectorize-io/hindsight/releases/download/${HINDSIGHT_CLI_VERSION}/hindsight-linux-amd64
+RUN set -euxo pipefail \
+    && HS_URL="${HINDSIGHT_CLI_URL}" \
+    && LOC="$(curl -sI "$HS_URL" | grep -i '^location:' | sed 's/location: //i' | tr -d '\r\n' || true)" \
+    && if [ -n "$LOC" ]; then curl -fsSL "$LOC" -o /tmp/hindsight; \
+       else curl -fsSL "$HS_URL" -o /tmp/hindsight; fi \
+    && echo "${HINDSIGHT_CLI_SHA256}  /tmp/hindsight" | sha256sum -c - \
+    && install -m 0755 -o "${PI_UID}" -g "${PI_GID}" /tmp/hindsight "${PI_LOCAL_BIN}/hindsight" \
+    && rm -f /tmp/hindsight \
+    && hindsight version
 
 # ---------------------------------------------------------------------------
 # MCP bridge (mcp mode)
@@ -190,10 +205,11 @@ ENV AI_AGENT=pi
 ENV PI_CODING_AGENT=true
 
 # Hindsight (long-term memory) — placeholders only; override at runtime.
-# Same API key as the Hindsight server's HINDSIGHT_TENANT_API_KEY.
-ENV HINDSIGHT_BASE_URL=http://your-hindsight-host:8888
+# Official CLI contract: HINDSIGHT_API_URL + HINDSIGHT_API_KEY (env overrides
+# profile). Key must equal the hindsight server's HINDSIGHT_TENANT_API_KEY.
+ENV HINDSIGHT_API_URL=http://your-hindsight-host:8888
 ENV HINDSIGHT_API_KEY=***
-ENV HINDSIGHT_BANK_ID=
+ENV HINDSIGHT_BANK_ID=agents
 
 # ---------------------------------------------------------------------------
 # Entrypoint script — generates models.json then execs pi

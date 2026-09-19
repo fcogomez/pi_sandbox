@@ -101,15 +101,17 @@ if [ ! -f "$MEMORY_DIR/MEMORY.md" ]; then
   [ -d "$local_src" ] && cp -a "$local_src"/. "$MEMORY_DIR"/ 2>/dev/null || true
 fi
 
-# Tell pi to maintain the memory
+# Tell pi to use the shared Hindsight memory (official CLI — no 3rd-party ext)
+HS_BANK="${HINDSIGHT_BANK_ID:-agents}"
 cat > /tmp/.pi-mem-prompt <<EOF
 
-## Shared memory protocol
-You have a shared memory folder at ${MEMORY_DIR} (format: ${MEMORY_DIR}/PROTOCOL.md).
-Before starting a task, run: bash ${MEMORY_DIR}/pi-mem.sh show 3   (if pi-mem.sh exists)
-When your task finishes, append one entry to ${MEMORY_DIR}/log/$(date +%F).md using the format in PROTOCOL.md.
-Durable facts (env, conventions, pitfalls) go in ${MEMORY_DIR}/MEMORY.md via: bash ${MEMORY_DIR}/pi-mem.sh fact "..."
-Never write secrets into these files.
+## Shared memory (Hindsight CLI — shared bank with Hermes)
+You have long-term shared memory via the \`hindsight\` CLI (bank: ${HS_BANK}).
+Before starting a task, run: hindsight memory recall ${HS_BANK} "<task summary in one sentence>"
+  — read the recalled memories and let them inform your work. No results is normal for new topics.
+When your task finishes, run: hindsight memory retain ${HS_BANK} "<what you did: files changed, key decisions, test results, remaining risks>" --async
+Durable facts worth remembering long-term (conventions, pitfalls, environment) are retained the same way — the server extracts facts on its side.
+Never write secrets into memory. If hindsight errors (server down, auth), continue the task and note the failure in your summary.
 EOF
 ARGS+=("--append-system-prompt" "$(cat /tmp/.pi-mem-prompt)")
 
