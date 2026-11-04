@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { dirname, resolve as resolvePath } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   PROTOCOL_VERSION,
   RequestError,
@@ -18,17 +20,42 @@ import {
   type Usage,
 } from "@agentclientprotocol/sdk";
 import {
+  DEFAULT_FS_DELEGATION,
+  DEFAULT_GATED_TOOLS,
   DEFAULT_THINKING_LEVEL,
   type AcpConfig,
   type ThinkingLevel,
 } from "./config.js";
+import { handleReadDelegation, READ_TITLE_PREFIX } from "./fs-delegation.js";
+import {
+  parsePermTitle,
+  requestToolPermission,
+  type PermissionOutcome,
+} from "./permissions.js";
 import { PiRpc, type PiRecord, type PiSpawner } from "./pi-rpc.js";
+import { piToolEventToAcpUpdate } from "./tool-mapping.js";
 import { ThinkingController } from "./thinking.js";
+
+/**
+ * Absolute path of the standalone pi extension (permission gate + read
+ * override). pi-extension.ts lives at the package root and is NOT compiled
+ * by tsup — pi loads it via `-e` with its own tsx loader. From either
+ * `src/` (tsx/tests) or `dist/` (tsup output), `..` resolves to the
+ * package root. Never use process.cwd(): the session's params.cwd is the
+ * project directory, not the package directory.
+ */
+export const PI_EXTENSION_PATH = resolvePath(
+  dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "pi-extension.ts",
+);
 
 export interface AcpAgentOptions {
   config?: AcpConfig;
   /** Spawner seam for the pi subprocess (tests inject an in-process fake). */
   spawner?: PiSpawner;
+  /** Path of the pi extension loaded via `-e` (default: the bundled one). */
+  extensionPath?: string;
   log?: (message: string) => void;
 }
 
@@ -43,10 +70,12 @@ interface ManagedSession {
   promptInFlight: boolean;
   /** Usage reported by the last agent_end for the in-flight prompt. */
   lastUsage: Usage | null;
+  /** Unsubscribe from pi extension_ui_request records. */
+  unsubscribeUi?: () => void;
 }
 
 /**
- * ACP agent backed by a `pi --mode rpc` subprocess (ticket ACP-A1).
+ * ACP agent backed by a `pi --mode rpc` subprocess (tickets ACP-A1/A2).
  *
  * A1 scope:
  *   - `initialize`      — handshake + capability exchange
@@ -55,18 +84,28 @@ interface ManagedSession {
  *   - `session/prompt`  — stream pi's run back as ACP session updates
  *   - pi-RPC-side thinking controls (set / get_available / cycle / get_state)
  *
- * NOT in A1 (deferred, do not advertise):
- *   - tool-call mapping + `session/request_permission` + `fs/read_text_file`
- *     (ticket A2)
- *   - `session/load`, `session/cancel`, `session/resume` persistence
- *     (ticket A3)
- *   - ACP runtime `session/set_mode` / `session/set_config_option` override of
- *     the thinking level (deferred; A1 applies the level from config only,
- *     plus the pi-RPC-side controls exposed on this adapter).
+ * A2 scope:
+ *   - pi is spawned with the bundled extension (`-e acp/pi-extension.ts`)
+ *     plus `ACP_FS_DELEGATION` / `ACP_GATED_TOOLS` env vars
+ *   - tool execution events (tool_execution_start/update/end) are mapped to
+ *     ACP `tool_call` / `tool_call_update` session updates (src/tool-mapping.ts)
+ *   - the extension's permission select (`[acp:perm] ...`) is bridged to
+ *     ACP `session/request_permission` and the selected option is written
+ *     back to pi (src/permissions.ts)
+ *   - the extension's read delegation input (`[acp:read] <path>`) is bridged
+ *     to ACP `fs/read_text_file` (src/fs-delegation.ts); unsupported clients
+ *     get `cancelled: true` so the extension falls back locally
+ *
+ * NOT in A2 (deferred, do not advertise):
+ *   - `session/load`, `session/cancel`, `session/resume` persistence (A3)
+ *   - ACP runtime `session/set_mode` / `session/set_config_option` override
+ *     of the thinking level
+ *   - fs/write_text_file delegation, persistent "always allow/reject"
  */
 export class PiAcpAgent implements Agent {
   private readonly config: AcpConfig;
   private readonly spawner?: PiSpawner;
+  private readonly extensionPath: string;
   private readonly log: (message: string) => void;
   private connection: AgentSideConnection | null = null;
   private readonly sessions = new Map<string, ManagedSession>();
@@ -79,7 +118,18 @@ export class PiAcpAgent implements Agent {
   constructor(options: AcpAgentOptions = {}) {
     this.config = options.config ?? { thinkingLevel: DEFAULT_THINKING_LEVEL };
     this.spawner = options.spawner;
+    this.extensionPath = options.extensionPath ?? PI_EXTENSION_PATH;
     this.log = options.log ?? ((m) => process.stderr.write(`[acp] ${m}\n`));
+  }
+
+  /** Tools gated on an ACP permission request (config, default bash,write,edit). */
+  private gatedTools(): string[] {
+    return this.config.gatedTools ?? [...DEFAULT_GATED_TOOLS];
+  }
+
+  /** Whether read is delegated to the ACP client (config, default true). */
+  private fsDelegation(): boolean {
+    return this.config.fsDelegation ?? DEFAULT_FS_DELEGATION;
   }
 
   /** Binds the connection handed in by AgentSideConnection. */
@@ -97,6 +147,7 @@ export class PiAcpAgent implements Agent {
   shutdown(): void {
     for (const [id, s] of this.sessions) {
       this.log(`closing session ${id}`);
+      s.unsubscribeUi?.();
       s.rpc.close();
       this.sessions.delete(id);
     }
@@ -114,9 +165,10 @@ export class PiAcpAgent implements Agent {
       `initialize from ${params.clientInfo?.name ?? "<unknown client>"} ` +
         `(protocolVersion=${params.protocolVersion})`,
     );
-    // Report only what A1 actually implements.
-    // PLANNED (A2, deliberately NOT advertised yet): tool-call mapping,
-    // session/request_permission, fs.readTextFile.
+    // Report only what A1+A2 actually implement. ACP 0.26.0 AgentCapabilities
+    // has no tool/fs flag; tool calls are supported implicitly by emitting
+    // them as session updates, and fs.readTextFile is gated by the CLIENT's
+    // capability (captured above), not an agent capability.
     // PLANNED (A3, deliberately NOT advertised yet): loadSession, resume.
     return {
       protocolVersion: PROTOCOL_VERSION,
@@ -140,6 +192,13 @@ export class PiAcpAgent implements Agent {
       spawner: this.spawner,
       cwd: params.cwd,
       log: this.log,
+      // Load the bundled extension (permission gate + read override) and
+      // tell it which tools to gate / whether read is delegated to the client.
+      extensionPath: this.extensionPath,
+      env: {
+        ACP_FS_DELEGATION: this.fsDelegation() ? "1" : "0",
+        ACP_GATED_TOOLS: this.gatedTools().join(","),
+      },
     });
     rpc.start();
 
@@ -149,7 +208,7 @@ export class PiAcpAgent implements Agent {
       const applied = await this.applyDefaultThinkingLevel(rpc, availableLevels);
 
       const sessionId = `pi-${randomUUID()}`;
-      this.sessions.set(sessionId, {
+      const session: ManagedSession = {
         rpc,
         thinking: new ThinkingController(rpc),
         cwd: params.cwd,
@@ -157,7 +216,16 @@ export class PiAcpAgent implements Agent {
         thinkingLevel: applied,
         promptInFlight: false,
         lastUsage: null,
+      };
+      // Bridge the bundled extension's UI dialogs to the ACP client:
+      //   select `[acp:perm] ...`  -> session/request_permission
+      //   input  `[acp:read] ...`  -> fs/read_text_file
+      session.unsubscribeUi = rpc.onExtensionUiRequest((req) => {
+        void this.handleExtensionUiRequest(session, req).catch((err) =>
+          this.log(`extension_ui handling failed: ${String(err)}`),
+        );
       });
+      this.sessions.set(sessionId, session);
       this.log(
         `session ${sessionId}: thinking levels=[${availableLevels.join(",")}] ` +
           `level=${applied}`,
@@ -337,10 +405,22 @@ export class PiAcpAgent implements Agent {
         if (usage) session.lastUsage = usage;
         break;
       }
-      default:
-        // session / agent_start / turn_start / message_start / message_end /
-        // turn_end / agent_settled: no ACP-side mapping needed in A1.
+      case "tool_execution_start":
+      case "tool_execution_update":
+      case "tool_execution_end": {
+        const toolCallId = typeof ev.toolCallId === "string" ? ev.toolCallId : "";
+        const toolName = typeof ev.toolName === "string" ? ev.toolName : "";
+        const args =
+          ev.args && typeof ev.args === "object"
+            ? (ev.args as Record<string, unknown>)
+            : {};
+        const update = piToolEventToAcpUpdate(ev, toolCallId, toolName, args);
+        if (update) {
+          void this.sendUpdate(session, update);
+        }
         break;
+      }
+      default:
     }
   }
 
@@ -349,6 +429,81 @@ export class PiAcpAgent implements Agent {
       if (s === session) return id;
     }
     throw new Error("session not found");
+  }
+
+  /**
+   * Handle an `extension_ui_request` from the bundled pi extension:
+   *   - select, title `[acp:perm] <tool> [id:<toolCallId>] <summary>`:
+   *     run the ACP permission round-trip (pending tool_call update +
+   *     session/request_permission with allow_once/reject_once) and write
+   *     the selected option id back to pi. Any failure rejects (blocks).
+   *   - input, title `[acp:read] <absolutePath>`:
+   *     delegate to the ACP client via fs/read_text_file; write the content
+   *     back, or `cancelled: true` when the client doesn't support it.
+   *   - anything else: cancel so the extension can proceed.
+   */
+  private async handleExtensionUiRequest(
+    session: ManagedSession,
+    req: PiRecord,
+  ): Promise<void> {
+    const rpc = session.rpc;
+    const id = String(req.id ?? "");
+    const method = typeof req.method === "string" ? req.method : "";
+    const title = typeof req.title === "string" ? req.title : "";
+
+    if (method === "select" && title.startsWith("[acp:perm] ")) {
+      const parsed = parsePermTitle(title);
+      if (!parsed || this.connection === null) {
+        rpc.writeExtensionUiResponse(id, undefined, undefined, true);
+        return;
+      }
+      let outcome: PermissionOutcome = "reject";
+      try {
+        outcome = await requestToolPermission({
+          connection: this.connection,
+          sessionId: this.sessionIdFor(session),
+          toolCallId: parsed.toolCallId,
+          toolName: parsed.toolName,
+          argsSummary: parsed.argsSummary,
+        });
+      } catch (err) {
+        this.log(
+          `permission request failed for ${parsed.toolName} ` +
+            `(${parsed.toolCallId}): ${String(err)}`);
+        outcome = "reject";
+      }
+      rpc.writeExtensionUiResponse(
+        id,
+        outcome === "allow" ? "allow_once" : "reject_once",
+      );
+      return;
+    }
+
+    if (method === "input" && title.startsWith(READ_TITLE_PREFIX)) {
+      const filePath = title.slice(READ_TITLE_PREFIX.length).trim();
+      let content: string | null = null;
+      if (this.connection !== null) {
+        try {
+          content = await handleReadDelegation(
+            this.sessionIdFor(session),
+            filePath,
+            this.connection,
+            this.clientCapabilities,
+          );
+        } catch (err) {
+          this.log(`read delegation failed for ${filePath}: ${String(err)}`);
+        }
+      }
+      if (content === null) {
+        rpc.writeExtensionUiResponse(id, undefined, undefined, true);
+      } else {
+        rpc.writeExtensionUiResponse(id, content);
+      }
+      return;
+    }
+
+    // Unrecognized dialog: cancel it.
+    rpc.writeExtensionUiResponse(id, undefined, undefined, true);
   }
 
   private async sendUpdate(session: ManagedSession, update: SessionUpdate): Promise<void> {

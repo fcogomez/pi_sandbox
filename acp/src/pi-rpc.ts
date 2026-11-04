@@ -50,6 +50,17 @@ export interface PiRpcOptions {
   command?: string;
   /** Arguments (default: ["--mode", "rpc"]). */
   args?: string[];
+  /**
+   * Path of a pi extension to load via `-e` (appended after the base args
+   * when set). A2 passes `acp/pi-extension.ts` (permission gate + read
+   * override); pi loads it with its own tsx loader at runtime.
+   */
+  extensionPath?: string;
+  /**
+   * Extra env vars for the child (merged over the parent env): A2 sets
+   * `ACP_FS_DELEGATION` ("1"/"0") and `ACP_GATED_TOOLS` (comma-joined).
+   */
+  env?: NodeJS.ProcessEnv;
   /** Working directory for the pi process. */
   cwd?: string;
   /** Diagnostics sink; defaults to writing to process.stderr. */
@@ -81,9 +92,12 @@ export class PiRpc {
   private readonly command: string;
   private readonly args: string[];
   private readonly cwd?: string;
+  private readonly extensionPath?: string;
+  private readonly env?: NodeJS.ProcessEnv;
   private readonly log: (message: string) => void;
   private readonly pending = new Map<string, PendingRequest>();
   private readonly listeners = new Set<(record: PiRecord) => void>();
+  private readonly extUiListeners = new Set<(record: PiRecord) => void>();
   private decoder = new StringDecoder("utf8");
   private buffer = "";
   private nextId = 1;
@@ -94,13 +108,19 @@ export class PiRpc {
     this.command = options.command ?? "pi";
     this.args = options.args ?? ["--mode", "rpc"];
     this.cwd = options.cwd;
+    this.extensionPath = options.extensionPath;
+    this.env = options.env;
     this.log = options.log ?? ((m) => process.stderr.write(`[acp:pi] ${m}\n`));
   }
 
   /** Spawn the pi process and start pumping stdout. */
   start(): void {
     if (this.child) return;
-    const child = this.spawner(this.command, this.args, { cwd: this.cwd });
+    const args = this.extensionPath
+      ? [...this.args, "-e", this.extensionPath]
+      : this.args;
+    const env = this.env ? { ...process.env, ...this.env } : undefined;
+    const child = this.spawner(this.command, args, { cwd: this.cwd, env });
     this.child = child;
 
     child.stdout.on("readable", () => {
@@ -171,6 +191,46 @@ export class PiRpc {
     return () => this.listeners.delete(listener);
   }
 
+  /**
+   * Subscribe to extension UI requests (records with
+   * `type: "extension_ui_request"`) emitted by pi extensions running inside
+   * the RPC process — e.g. `ctx.ui.select(...)` (permission gate) or
+   * `ctx.ui.input(...)` (read delegation) from the bundled pi-extension.ts.
+   * These are routed here, NOT to the session event stream.
+   * Returns an unsubscribe function.
+   */
+  onExtensionUiRequest(listener: (record: PiRecord) => void): () => void {
+    this.extUiListeners.add(listener);
+    return () => this.extUiListeners.delete(listener);
+  }
+
+  /**
+   * Write an `extension_ui_response` back to pi's stdin, unblocking the
+   * pending extension UI dialog:
+   *   select  -> { id, value: "<selected option string>" }
+   *   input   -> { id, value: "<text>" }
+   *   confirm -> { id, confirmed: true|false }
+   *   cancel  -> { id, cancelled: true }
+   */
+  writeExtensionUiResponse(
+    id: string,
+    value?: string,
+    confirmed?: boolean,
+    cancelled?: boolean,
+  ): void {
+    if (!this.child || this.closed) {
+      this.log(`extension_ui_response dropped (pi closed): ${id}`);
+      return;
+    }
+    const record: PiRecord = { type: "extension_ui_response", id };
+    if (cancelled === true) record.cancelled = true;
+    else if (value !== undefined) record.value = value;
+    else if (confirmed !== undefined) record.confirmed = confirmed;
+    this.child.stdin.write(JSON.stringify(record) + "\n", (err) => {
+      if (err) this.log(`extension_ui_response write error: ${err.message}`);
+    });
+  }
+
   /** Terminate the pi process. */
   close(): void {
     if (!this.child) return;
@@ -219,6 +279,18 @@ export class PiRpc {
         pending.reject(new Error(`pi command ${pending.command} failed: ${msg}`));
       } else {
         pending.resolve(record.data);
+      }
+      return;
+    }
+    // Extension UI requests are a request/response sub-protocol, not
+    // session events: route them to their own subscribers and stop.
+    if (record.type === "extension_ui_request") {
+      for (const listener of [...this.extUiListeners]) {
+        try {
+          listener(record);
+        } catch (err) {
+          this.log(`extension_ui listener error: ${String(err)}`);
+        }
       }
       return;
     }

@@ -24,6 +24,16 @@ export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
  */
 export const DEFAULT_THINKING_LEVEL: ThinkingLevel = "medium";
 
+/**
+ * Tools that require an ACP `session/request_permission` round-trip before
+ * pi executes them (read-only tools like read/grep/find/ls are not gated).
+ * Exported as `ACP_GATED_TOOLS` (comma-joined) to the pi subprocess.
+ */
+export const DEFAULT_GATED_TOOLS: readonly string[] = ["bash", "write", "edit"];
+
+/** Default read delegation: ask the ACP client via fs/read_text_file. */
+export const DEFAULT_FS_DELEGATION = true;
+
 const thinkingLevelSchema = z.enum(THINKING_LEVELS);
 
 /**
@@ -34,15 +44,28 @@ const thinkingLevelSchema = z.enum(THINKING_LEVELS);
  * override (session/set_mode / session/set_config_option) is DEFERRED to a
  * later ticket; in A1 the level can only be changed via this config field
  * or the pi-RPC-side thinking controls (ThinkingController).
+ *
+ * A2 adds:
+ *   - `gatedTools`   (default ["bash","write","edit"]): tools whose pi
+ *     `tool_call` the bundled extension gates on an ACP permission request.
+ *     Exported to the pi subprocess as `ACP_GATED_TOOLS` (comma-joined).
+ *   - `fsDelegation` (default true): delegate the read tool to the ACP
+ *     client's `fs/read_text_file`. Exported as `ACP_FS_DELEGATION` = "1"/"0".
  */
 export interface AcpConfig {
   thinkingLevel: ThinkingLevel;
+  /** Tools requiring ACP permission before execution (default bash, write, edit). */
+  gatedTools?: string[];
+  /** Delegate read_text_file to the ACP client (default true). */
+  fsDelegation?: boolean;
   /** Path of the config file this config was loaded from, if any. */
   source?: string;
 }
 
 const configFileSchema = z.object({
   thinkingLevel: thinkingLevelSchema.optional(),
+  gatedTools: z.array(z.string()).optional(),
+  fsDelegation: z.boolean().optional(),
 });
 
 /**
@@ -62,7 +85,11 @@ export function loadConfig(options?: { configPath?: string }): AcpConfig {
 
   const path = candidates.find((p) => existsSync(p));
   if (!path) {
-    return { thinkingLevel: DEFAULT_THINKING_LEVEL };
+    return {
+      thinkingLevel: DEFAULT_THINKING_LEVEL,
+      gatedTools: [...DEFAULT_GATED_TOOLS],
+      fsDelegation: DEFAULT_FS_DELEGATION,
+    };
   }
 
   let raw: unknown;
@@ -81,6 +108,8 @@ export function loadConfig(options?: { configPath?: string }): AcpConfig {
   }
   return {
     thinkingLevel: parsed.data.thinkingLevel ?? DEFAULT_THINKING_LEVEL,
+    gatedTools: parsed.data.gatedTools ?? [...DEFAULT_GATED_TOOLS],
+    fsDelegation: parsed.data.fsDelegation ?? DEFAULT_FS_DELEGATION,
     source: path,
   };
 }
