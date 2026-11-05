@@ -21,6 +21,8 @@ import {
   type PromptResponse,
   type ResumeSessionRequest,
   type ResumeSessionResponse,
+  type SetSessionConfigOptionRequest,
+  type SetSessionConfigOptionResponse,
   type SessionConfigOption,
   type SessionUpdate,
   type Usage,
@@ -93,6 +95,19 @@ interface ManagedSession {
   lastUsedAt: string;
   /** Unsubscribe from pi extension_ui_request records. */
   unsubscribeUi?: () => void;
+  /**
+   * B2: the in-flight `session/prompt` turn, or null when none is in flight.
+   * Real pi's `prompt` command responds at ACCEPTANCE (the turn then streams
+   * and the session file is written ~1s later); the ACP `session/prompt`
+   * promise must instead resolve at TURN COMPLETION (the `agent_settled`
+   * event). So the RPC is fire-and-forget (rejection settles the promise as
+   * an error) and `resolveTurn` is what `handlePiEvent` calls on
+   * `agent_settled`.
+   */
+  promptTurn?: {
+    resolve: (r: { stopReason: "end_turn" | "cancelled"; usage: Usage | null }) => void;
+    reject: (e: Error) => void;
+  } | null;
 }
 
 /** Result of spawning + wiring a fresh pi subprocess for an ACP session. */
@@ -207,6 +222,9 @@ export class PiAcpAgent implements Agent {
   shutdown(): void {
     for (const [id, s] of this.sessions) {
       this.log(`closing session ${id}`);
+      // Settle any in-flight turn (clears its watchdog timer, so shutdown
+      // cannot keep the event loop alive).
+      s.promptTurn?.reject(new Error("agent shutting down"));
       s.unsubscribeUi?.();
       s.rpc.close();
       this.sessions.delete(id);
@@ -291,10 +309,9 @@ export class PiAcpAgent implements Agent {
     // config option (category "thought_level"), with the applied default
     // as the current value.
     //
-    // NOTE: the ACP runtime override (`session/set_mode` /
-    // `session/set_config_option`) is DEFERRED — we intentionally do not
-    // implement those endpoints in A1/A2/A3, so a client selecting a new
-    // value there is out of contract until the follow-up ticket.
+    // B2: the runtime override is implemented via `session/set_config_option`
+    // (thinking_level only). `session/set_mode` is still not implemented
+    // (we advertise no modes).
     const configOptions = this.buildThinkingConfigOptions(
       spawn.availableLevels,
       spawn.thinkingLevel,
@@ -334,25 +351,73 @@ export class PiAcpAgent implements Agent {
     session.lastUsage = null;
     const unsubscribe = session.rpc.onEvent((ev) => this.handlePiEvent(session, ev));
     this.log(`prompt on session ${params.sessionId}: ${truncate(text)}`);
-    try {
-      // The correlated response completes when pi finishes the turn; the
-      // streamed content itself arrives via the event stream (message_update
-      // deltas) and agent_end (final messages + usage).
-      await session.rpc.request("prompt", { text });
-      // A3: if session/cancel arrived while this run was in flight, the
-      // ACP cancelled stop reason is reported on this prompt response (the
-      // session/cancel notification itself is fire-and-forget).
-      return session.cancelRequested
-        ? { stopReason: "cancelled", usage: session.lastUsage }
-        : { stopReason: "end_turn", usage: session.lastUsage };
-    } catch (err) {
-      throw RequestError.internalError(undefined, `prompt failed: ${String(err)}`);
-    } finally {
-      unsubscribe();
-      // The cancel flag is cleared when the prompt settles.
-      session.cancelRequested = false;
-      session.promptInFlight = false;
-    }
+    return new Promise<{ stopReason: "end_turn" | "cancelled"; usage: Usage | null }>(
+      (resolve, reject) => {
+        let settled = false;
+        // Settle exactly once: normally on pi's `agent_settled` event (turn
+        // complete / aborted), on the watchdog if that never arrives, or
+        // from the RPC rejection if pi REJECTED the prompt at acceptance
+        // (success:false) — in that case there is no turn to stream.
+        const settle = (stopReason: "end_turn" | "cancelled"): void => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(watchdog);
+          unsubscribe();
+          session.cancelRequested = false;
+          session.promptInFlight = false;
+          session.promptTurn = null;
+          resolve({ stopReason, usage: session.lastUsage });
+        };
+        // ACP contract: session/prompt resolves when the turn COMPLETES,
+        // not when pi accepts it (real pi responds at acceptance; the turn
+        // streams afterwards and the session file lands ~1s later). Safety
+        // net so a lost `agent_settled` can never hang the request forever.
+        const watchdog = setTimeout(
+          () => {
+            reject(
+              new Error(
+                "prompt turn did not settle (no agent_settled event); aborting",
+              ),
+            );
+            session.cancelRequested = false;
+            session.promptInFlight = false;
+            session.promptTurn = null;
+            unsubscribe();
+            void session.rpc.request("abort").catch(() => {});
+          },
+          600000,
+        );
+        session.promptTurn = {
+          resolve: (r) => settle(r.stopReason),
+          reject: (e) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(watchdog);
+            unsubscribe();
+            session.cancelRequested = false;
+            session.promptInFlight = false;
+            session.promptTurn = null;
+            reject(e);
+          },
+        };
+        // Fire-and-forget: a rejection here means pi rejected the prompt at
+        // acceptance (no turn follows); `agent_settled` will NOT come for it.
+        session.rpc
+          .request("prompt", { message: text })
+          .catch((err: unknown) => {
+            const turn = session.promptTurn;
+            if (turn === null || turn === undefined) {
+              // Turn already settled (aborted): the abort's RPC rejection is
+              // expected — ignore it.
+              this.log(
+                `prompt RPC settled after turn end for ${params.sessionId}: ${String(err)}`,
+              );
+              return;
+            }
+            turn.reject(new Error(`prompt failed: ${String(err)}`));
+          });
+      },
+    );
   }
 
   // ---------------------------------------------------------------------
@@ -376,6 +441,55 @@ export class PiAcpAgent implements Agent {
    */
   async resumeSession(params: ResumeSessionRequest): Promise<ResumeSessionResponse> {
     return this.restoreSession(params, false);
+  }
+
+  /**
+   * ACP `session/set_config_option` (ticket ACP-B2, ACP-CONFIG-002).
+   *
+   * We advertise exactly one config option (`thinking_level`, a select).
+   * Setting it applies the level to the live pi session via the thinking
+   * controller, updates the session record, and returns the COMPLETE
+   * configOptions list (spec: the full set with current values, so the
+   * client can reflect dependent changes). Unknown configId / unknown
+   * session -> invalidParams (clean error, not a crash).
+   */
+  async setSessionConfigOption(
+    params: SetSessionConfigOptionRequest,
+  ): Promise<SetSessionConfigOptionResponse> {
+    if (!this.initialized) {
+      throw RequestError.invalidParams(undefined, "set_config_option before initialize");
+    }
+    const session = this.sessions.get(params.sessionId);
+    if (!session) {
+      throw RequestError.invalidParams(undefined, `unknown sessionId: ${params.sessionId}`);
+    }
+    // The only option we ever advertise is the thinking-level select.
+    if (params.configId !== "thinking_level") {
+      throw RequestError.invalidParams(
+        undefined,
+        `unknown configId: ${String(params.configId)}`,
+      );
+    }
+    const value = params.value as ThinkingLevel;
+    if (!session.availableLevels.includes(value)) {
+      throw RequestError.invalidParams(
+        undefined,
+        `value ${String(value)} is not an available thinking level`,
+      );
+    }
+    try {
+      await session.thinking.set(value);
+    } catch (err) {
+      throw RequestError.internalError(
+        undefined,
+        `set_config_option (thinking_level) failed: ${String(err)}`,
+      );
+    }
+    session.thinkingLevel = value;
+    // Return the complete list with the refreshed current value (ACP-CONFIG-002).
+    return {
+      configOptions: this.buildThinkingConfigOptions(session.availableLevels, value),
+    };
   }
 
   /**
@@ -408,6 +522,48 @@ export class PiAcpAgent implements Agent {
         `session/${replay ? "load" : "resume"}: ignoring ` +
           `${params.mcpServers.length} mcpServers (MCP wiring is out of scope)`,
       );
+    }
+
+    // B2 fast path: a session that is live in memory but has no on-disk file
+    // yet (created but never prompted — pi writes the session file on the
+    // first prompt) cannot be re-spawned from disk. Reuse the live session
+    // as the source of truth instead of failing "session file missing".
+    // When the file DOES exist (a persisted session), the normal
+    // re-spawn/switch_session path below still runs (ACP-LOAD replay).
+    const live = this.sessions.get(params.sessionId);
+    if (live) {
+      let fileOnDisk = false;
+      if (live.sessionFile) {
+        try {
+          await access(live.sessionFile);
+          fileOnDisk = true;
+        } catch {
+          fileOnDisk = false;
+        }
+      }
+      if (!fileOnDisk) {
+        this.log(
+          `session/${replay ? "load" : "resume"} for live in-memory session ` +
+            `${params.sessionId} (no on-disk file yet); reusing live session`,
+        );
+        if (replay) {
+          try {
+            await this.replayHistory(live);
+          } catch (err) {
+            throw RequestError.internalError(
+              undefined,
+              `session/load replay failed: ${String(err)}`,
+            );
+          }
+        }
+        return {
+          modes: null,
+          configOptions: this.buildThinkingConfigOptions(
+            live.availableLevels,
+            live.thinkingLevel,
+          ),
+        };
+      }
     }
 
     const map = await this.ensureMap();
@@ -634,6 +790,7 @@ export class PiAcpAgent implements Agent {
       promptInFlight: false,
       cancelRequested: false,
       lastUsage: null,
+      promptTurn: null,
       piSessionId: null,
       sessionFile: null,
       createdAt: now,
@@ -816,6 +973,20 @@ export class PiAcpAgent implements Agent {
         if (usage) session.lastUsage = usage;
         break;
       }
+      case "agent_settled": {
+        // B2: the turn is over (completed or aborted). Resolve the in-flight
+        // ACP session/prompt now — this is the ACP turn-completion signal.
+        // (agent_settled {aborted:true} also arrives for a session/cancel.)
+        const turn = session.promptTurn;
+        if (turn) {
+          const aborted = ev.aborted === true || session.cancelRequested;
+          turn.resolve({
+            stopReason: aborted ? "cancelled" : "end_turn",
+            usage: session.lastUsage,
+          });
+        }
+        break;
+      }
       case "tool_execution_start":
       case "tool_execution_update":
       case "tool_execution_end": {
@@ -825,7 +996,7 @@ export class PiAcpAgent implements Agent {
           ev.args && typeof ev.args === "object"
             ? (ev.args as Record<string, unknown>)
             : {};
-        const update = piToolEventToAcpUpdate(ev, toolCallId, toolName, args);
+        const update = piToolEventToAcpUpdate(ev, toolCallId, toolName, args, session.cwd);
         if (update) {
           void this.sendUpdate(session, update);
         }

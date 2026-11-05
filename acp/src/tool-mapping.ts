@@ -1,3 +1,4 @@
+import { isAbsolute, resolve as resolvePath } from "node:path";
 import type { ContentBlock, SessionUpdate, ToolKind } from "@agentclientprotocol/sdk";
 import type { PiRecord } from "./pi-rpc.js";
 
@@ -77,15 +78,29 @@ function toToolCallContent(blocks: unknown): Array<{ type: "content"; content: C
 /**
  * Map a pi tool execution event to the corresponding ACP `session/update`,
  * or `null` when the event has no ACP-side mapping.
+ *
+ * `cwd` is the session's working directory (params.cwd). Used to make
+ * `locations[].path` absolute (ACP-PROMPT-004: every emitted file path
+ * must be absolute; pi reports tool args relative to cwd).
  */
 export function piToolEventToAcpUpdate(
   ev: PiRecord,
   toolCallId: string,
   toolName: string,
   args: Record<string, unknown>,
+  cwd?: string,
 ): SessionUpdate | null {
   switch (ev.type) {
-    case "tool_execution_start":
+    case "tool_execution_start": {
+      // ACP-PROMPT-004: emitted file paths must be absolute. pi reports
+      // tool args relative to the session cwd, so resolve against it.
+      const rawPath = typeof args.path === "string" ? args.path : "";
+      const locPath =
+        rawPath === ""
+          ? undefined
+          : cwd && !isAbsolute(rawPath)
+            ? resolvePath(cwd, rawPath)
+            : rawPath;
       return {
         sessionUpdate: "tool_call",
         toolCallId,
@@ -93,8 +108,9 @@ export function piToolEventToAcpUpdate(
         kind: toolNameToKind(toolName),
         status: "in_progress",
         rawInput: args,
-        locations: typeof args.path === "string" && args.path !== "" ? [{ path: args.path }] : undefined,
+        locations: locPath !== undefined ? [{ path: locPath }] : undefined,
       };
+    }
 
     case "tool_execution_update": {
       const partialResult = ev.partialResult as { content?: unknown } | undefined;

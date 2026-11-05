@@ -227,7 +227,7 @@ test("session/prompt: streams thought + message chunks, final usage, stop reason
 
     // The prompt command reached the fake with the joined text.
     assert.deepEqual(
-      h.fake.commandsOf("prompt").map((c) => c.text),
+      h.fake.commandsOf("prompt").map((c) => c.message),
       ["What is the answer?"],
     );
   } finally {

@@ -359,7 +359,7 @@ export class FakePi implements PiProcessLike {
       case "prompt": {
         // The user message is appended to the session file when the prompt
         // is accepted (even if the run is later aborted).
-        const text = String(cmd.text ?? "");
+        const text = String(cmd.message ?? "");
         this.history().push({ role: "user", content: text });
         await this.runPrompt(id, text);
         return;
@@ -431,8 +431,14 @@ export class FakePi implements PiProcessLike {
             },
           ],
         },
-        { type: "agent_settled" },
       ];
+      // NOTE: `agent_settled` is NOT in this list. It is emitted AFTER the
+      // assistant message is persisted (below), matching real pi, which
+      // writes the completed message to the session file at message_end —
+      // i.e. the file is complete before the turn settles. An adapter that
+      // resolves session/prompt on agent_settled (the ACP turn-completion
+      // contract) must therefore already see the full history when it
+      // responds.
 
       let middle: Array<Record<string, unknown>> = [];
       switch (this.behavior) {
@@ -458,7 +464,9 @@ export class FakePi implements PiProcessLike {
       }
       if (run.aborted) return; // the abort handler already answered the prompt
 
-      // The completed assistant message is appended to the session file.
+      // The completed assistant message is appended to the session file
+      // BEFORE the turn settles (real pi persists it at message_end; the
+      // file is complete by agent_settled).
       this.history().push(this.assistantMessage());
       this.respond(
         id,
@@ -471,6 +479,7 @@ export class FakePi implements PiProcessLike {
           usage: this.usage,
         },
       );
+      this.emitLine({ type: "agent_settled" });
     } finally {
       if (this.runState === run) this.runState = null;
     }
