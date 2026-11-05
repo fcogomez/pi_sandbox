@@ -58,6 +58,11 @@ export interface AcpConfig {
   gatedTools?: string[];
   /** Delegate read_text_file to the ACP client (default true). */
   fsDelegation?: boolean;
+  /**
+   * A3: path of the on-disk session map JSON file. Resolution order:
+   * this field -> env ACP_SESSION_MAP_PATH -> ~/.acp-pi/sessions.json.
+   */
+  sessionMapPath?: string;
   /** Path of the config file this config was loaded from, if any. */
   source?: string;
 }
@@ -66,6 +71,7 @@ const configFileSchema = z.object({
   thinkingLevel: thinkingLevelSchema.optional(),
   gatedTools: z.array(z.string()).optional(),
   fsDelegation: z.boolean().optional(),
+  sessionMapPath: z.string().optional(),
 });
 
 /**
@@ -110,6 +116,7 @@ export function loadConfig(options?: { configPath?: string }): AcpConfig {
     thinkingLevel: parsed.data.thinkingLevel ?? DEFAULT_THINKING_LEVEL,
     gatedTools: parsed.data.gatedTools ?? [...DEFAULT_GATED_TOOLS],
     fsDelegation: parsed.data.fsDelegation ?? DEFAULT_FS_DELEGATION,
+    sessionMapPath: parsed.data.sessionMapPath,
     source: path,
   };
 }

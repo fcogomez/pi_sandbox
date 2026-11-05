@@ -34,6 +34,15 @@ export function piToolKind(toolName: string): ToolKind {
 }
 
 /**
+ * Tool name -> ACP ToolKind (the locked A2 mapping). A3 reuses this for
+ * history replay (`toolCall` blocks in `get_messages`) so live tool events
+ * and replayed history always map to the same kind.
+ */
+export function toolNameToKind(toolName: string): ToolKind {
+  return piToolKind(toolName);
+}
+
+/**
  * Human-readable "args summary" for a tool call title:
  *   bash          -> args.command
  *   read/write/edit -> args.path
@@ -81,7 +90,7 @@ export function piToolEventToAcpUpdate(
         sessionUpdate: "tool_call",
         toolCallId,
         title: `${toolName}: ${argsSummary(toolName, args)}`,
-        kind: piToolKind(toolName),
+        kind: toolNameToKind(toolName),
         status: "in_progress",
         rawInput: args,
         locations: typeof args.path === "string" && args.path !== "" ? [{ path: args.path }] : undefined,

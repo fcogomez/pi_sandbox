@@ -107,8 +107,9 @@ test("initialize handshake: protocolVersion negotiated, capabilities + info pres
     assert.ok(typeof res.agentInfo.version === "string");
     assert.ok(res.agentCapabilities, "agentCapabilities must be present");
 
-    // A1 must not claim tool/fs/permission or session-persistence support.
-    assert.notEqual(res.agentCapabilities.loadSession, true, "loadSession is A3");
+    // A3: session persistence is implemented — loadSession IS advertised
+    // (this assertion was "loadSession is A3" while it was still deferred).
+    assert.equal(res.agentCapabilities.loadSession, true, "loadSession advertised since A3");
     assert.ok(
       res.agentCapabilities.sessionCapabilities === undefined ||
         !("delete" in (res.agentCapabilities.sessionCapabilities ?? {})),

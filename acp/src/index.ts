@@ -50,6 +50,19 @@ function main(): void {
   };
   const connection = new AgentSideConnection((conn) => agent.attach(conn), stream);
   void connection.closed.finally(() => process.exit(0));
+
+  // A3 orphan protection: on SIGINT/SIGTERM/exit, close every managed pi
+  // child before the process dies. (Session-map entries are deliberately
+  // NOT deleted on shutdown — that is what makes sessions loadable after a
+  // restart.)
+  const shutdown = (reason: string): void => {
+    process.stderr.write(`[acp] ${reason}: shutting down (closing pi children)\n`);
+    agent.shutdown();
+    process.exit(0);
+  };
+  process.on("SIGINT", () => shutdown("SIGINT received"));
+  process.on("SIGTERM", () => shutdown("SIGTERM received"));
+  process.on("exit", () => agent.shutdown());
 }
 
 main();
