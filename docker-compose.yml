@@ -98,6 +98,41 @@ services:
     # ports:
     #   - "${PI_MCP_PORT:-3103}:${PI_MCP_PORT:-3103}"
 
+  # Persistent ACP server daemon (acp mode — WebSocket + bearer auth).
+  # Long-running; reached via Docker DNS on the traefik network
+  # (ws://pi-sandbox-acp:3123). NO host port is published.
+  pi-sandbox-acp:
+    image: pi-sandbox:${PI_TAG:-latest}
+    container_name: pi-sandbox-acp
+    restart: unless_started
+    environment:
+      PI_CODING_AGENT_DIR: /home/pi/.pi/agent
+      WORKSPACE_DIR: /home/pi/workspace
+      PI_LLM_PROVIDER_NAME: ${PI_LLM_PROVIDER_NAME:-vllm}
+      PI_LLM_BASE_URL: ${PI_LLM_BASE_URL:-http://your-llm-host:8000/v1}
+      PI_LLM_API: ${PI_LLM_API:-openai-completions}
+      PI_LLM_API_KEY: ${PI_LLM_API_KEY}
+      PI_LLM_MODEL_ID: ${PI_LLM_MODEL_ID:-your-org/your-model}
+      PI_LLM_MODEL_NAME: ${PI_LLM_MODEL_NAME:-your-org/your-model (example)}
+      PI_LLM_REASONING: ${PI_LLM_REASONING:-true}
+      PI_LLM_INPUT: ${PI_LLM_INPUT:-text}
+      PI_LLM_CONTEXT_WINDOW: ${PI_LLM_CONTEXT_WINDOW:-262144}
+      PI_LLM_MAX_TOKENS: ${PI_LLM_MAX_TOKENS:-32768}
+      PI_OFFLINE: 1
+      PI_SKIP_VERSION_CHECK: 1
+      PI_TELEMETRY: 0
+      PI_ACP_API_KEY: ${PI_ACP_API_KEY}
+      PI_ACP_PORT: ${PI_ACP_PORT:-3123}
+    volumes:
+      - ${HOST_WORKSPACE:-/path/to/your/workspace}:/home/pi/workspace
+      - pi-agent-home:/home/pi/.pi/agent
+      - ./memory:/home/pi/memory
+    working_dir: /home/pi/workspace
+    entrypoint: ["/opt/pi/entrypoint.sh"]
+    command: ["acp"]
+    expose:
+      - "${PI_ACP_PORT:-3123}"
+
 volumes:
   pi-agent-home:
 

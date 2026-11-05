@@ -127,4 +127,18 @@ if [ "${1:-}" = "mcp" ]; then
   exec node /opt/pi-mcp/server.js
 fi
 
+# --- acp mode: run the ACP adapter daemon (WebSocket server) ----------------
+# `acp serve` listens on ${PI_ACP_HOST:-127.0.0.1}:${PI_ACP_PORT:-3123};
+# bearer-key auth (PI_ACP_API_KEY) is required — the server refuses to start
+# open. models.json is already in place; each ACP session spawns its own
+# `pi --mode rpc` child.
+if [ "${1:-}" = "acp" ]; then
+  if [ -z "${PI_ACP_API_KEY:-}" ]; then
+    echo "[pi-sandbox] FATAL: PI_ACP_API_KEY is not set; the ACP server refuses to start open." >&2
+    exit 1
+  fi
+  echo "[pi-sandbox] Starting ACP server on ${PI_ACP_HOST:-127.0.0.1}:${PI_ACP_PORT:-3123}"
+  exec node /opt/acp/dist/index.js serve
+fi
+
 exec pi "${ARGS[@]}" "$@"

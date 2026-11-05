@@ -169,6 +169,18 @@ COPY --chown=${PI_UID}:${PI_GID} mcp/ /opt/pi-mcp/
 RUN cd /opt/pi-mcp && npm ci --omit=dev --ignore-scripts
 
 # ---------------------------------------------------------------------------
+# ACP adapter (acp mode)
+#   ACP (Agent Client Protocol) adapter for pi --mode rpc. `acp` = stdio
+#   (default); `acp serve` = WebSocket server, port 3123 (PI_ACP_PORT),
+#   bearer-key auth via PI_ACP_API_KEY (refuses to start open).
+#   NOTE: tsup/typescript are devDependencies of the acp package, so the
+#   build step needs a FULL install (--omit=dev would remove the build
+#   toolchain and `npm run build` would fail).
+# ---------------------------------------------------------------------------
+COPY --chown=${PI_UID}:${PI_GID} acp/ /opt/acp/
+RUN cd /opt/acp && npm ci --ignore-scripts && npm run build
+
+# ---------------------------------------------------------------------------
 # Runtime environment variables
 #   - PI_CODING_AGENT_DIR: where pi stores config, sessions, models.json
 #   - WORKSPACE_DIR: default working dir for tasks
