@@ -1,0 +1,17 @@
+{
+  "name": "acp-proxy",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Mac-side ACP proxy: stdio ACP agent (launched by Xcode) that forwards to a remote acp serve WebSocket endpoint (ticket ACP-C1).",
+  "type": "module",
+  "bin": {
+    "acp-proxy": "./acp-proxy.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "ws": "^8.22.1"
+  },
+  "license": "MIT"
+}

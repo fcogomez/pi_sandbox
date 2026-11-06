@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  acp-proxy launchd agent (ticket ACP-C1) — OPTIONAL.
+
+  Install only if you want the proxy kept alive independently of Xcode:
+    cp com.pi.acp-proxy.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.pi.acp-proxy.plist
+    launchctl unload ~/Library/LaunchAgents/com.pi.acp-proxy.plist   # remove
+
+  NOTE: Xcode's "Add an Agent" flow LAUNCHES the proxy itself when a
+  session starts. This plist is for standalone use / debugging (e.g.
+  driving it from the terminal or the ACP TCK). When Xcode launches the
+  proxy, the plist is not involved.
+
+  Placeholder to replace before install:
+    __ACP_PROXY__   -> absolute path to the acp-proxy install dir
+                        (e.g. /Users/YOU/acp-proxy)
+                        so the script is /Users/YOU/acp-proxy/acp-proxy.mjs
+  Keep the real key in the config file (chmod 600), NOT in this plist.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.pi.acp-proxy</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/node</string>
+    <string>__ACP_PROXY__/acp-proxy.mjs</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>ACP_PROXY_CONFIG</key>
+    <string>__ACP_PROXY__/config.json</string>
+  </dict>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/tmp/acp-proxy.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/acp-proxy.err.log</string>
+  <key>RunAtLoad</key>
+  <true/>
+</dict>
+</plist>
