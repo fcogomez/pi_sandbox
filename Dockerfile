@@ -154,8 +154,19 @@ RUN npm install -g --ignore-scripts \
 ARG HINDSIGHT_CLI_VERSION=0.10.0
 ARG HINDSIGHT_CLI_SHA256=02160d71a0ecafda1df7cceab4446362d76500dfa2c3b768d773b86e423e8f19
 ARG HINDSIGHT_CLI_URL=https://github.com/vectorize-io/hindsight/releases/download/${HINDSIGHT_CLI_VERSION}/hindsight-linux-amd64
+# The Hindsight prebuilt asset lives on GitHub's release-asset CDN, which
+# intermittently 404s (evicts) older assets — the download is retried a few
+# times. Integrity is enforced by the sha256 gate below (version stays 0.10.0).
+# NOTE: `hindsight --version` (not `hindsight version`) — the subcommand phones
+# the live API and exits 1 at build time; --version is offline.
 RUN set -euxo pipefail \
-    && curl -fSL "${HINDSIGHT_CLI_URL}" -o /tmp/hindsight \
+    && OK=0 \
+    && for attempt in 1 2 3 4 5; do \
+         if curl -fSL "${HINDSIGHT_CLI_URL}" -o /tmp/hindsight; then OK=1; break; fi; \
+         echo "hindsight download attempt ${attempt}/5 failed, sleeping 5s"; \
+         sleep 5; \
+       done \
+    && test "$OK" = "1" -a -s /tmp/hindsight \
     && echo "${HINDSIGHT_CLI_SHA256}  /tmp/hindsight" | sha256sum -c - \
     && install -m 0755 -o "${PI_UID}" -g "${PI_GID}" /tmp/hindsight "${PI_LOCAL_BIN}/hindsight" \
     && rm -f /tmp/hindsight \
