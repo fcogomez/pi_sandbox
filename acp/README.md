@@ -152,6 +152,19 @@ on each transport, with 1 shared documented deviation:
   capability surfaces as "not yet covered". Forwarding `mcpServers` to pi
   is a deliberate follow-up, not an oversight.
 
+### Re-verified against pi 1.5.0 (2026-11-06)
+
+Upstream `@earendil-works/pi-coding-agent` moved 0.85.1 → **1.5.0** (a
+major line). Before pinning 1.5.0 in the Dockerfile, the full TCK was
+re-run against a **real** `pi --mode rpc` 1.5.0 (same vLLM endpoint):
+**CONFORMANT** — 31/31 MANDATORY, 6/6 CAPABILITY, 5/5 INFORMATIONAL,
+11/12 ADVISORY (the same single ACP-SESSION-004 deviation), 55 passed /
+18 skipped — identical to the 0.85.1 result. The 1.x bump did not change
+the `pi --mode rpc` JSONL contract this adapter depends on
+(`agent_settled` / `agent_end` / `switch_session` / extension API), nor
+the `pi -p --mode json` stream the MCP bridge parses, nor the
+`--thinking` level enum. Safe to build on 1.5.0.
+
 B2 conformance findings fixed in this ticket (all verified by the kit run):
 
 1. **Real-pi prompt field:** pi 0.85.1's RPC `prompt` command takes

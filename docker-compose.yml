@@ -23,7 +23,7 @@ services:
         PI_GID: ${PI_GID:-100}
         PI_USER_NAME: ${PI_USER_NAME:-pi}
         NODE_MAJOR_VERSION: ${NODE_MAJOR_VERSION:-26}
-        PI_NPM_VERSION: ${PI_NPM_VERSION:-latest}
+        PI_NPM_VERSION: ${PI_NPM_VERSION:-1.5.0}
     restart: unless_started
     environment:
       PI_CODING_AGENT_DIR: /home/pi/.pi/agent

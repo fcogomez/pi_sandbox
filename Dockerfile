@@ -42,7 +42,11 @@ ARG PI_USER_HOME=/home/${PI_USER_NAME}
 ARG PI_LOCAL_BIN=${PI_USER_HOME}/.local/bin
 ARG NODE_MAJOR_VERSION=26
 ARG NODE_INSTALL_DIR=${PI_USER_HOME}/.local/share/nodejs
-ARG PI_NPM_VERSION=latest
+# Pinned to the upstream @earendil-works/pi-coding-agent latest as of the
+# 2026-11-06 rebuild (was floating `latest`). ACP adapter verified CONFORMANT
+# (official ACP TCK) against 1.5.0 — see acp/README conformance section.
+# Bump deliberately (and re-run the ACP TCK) when upgrading.
+ARG PI_NPM_VERSION=1.5.0
 # Gradle (Kotlin/Java builds, e.g. API services); version pinned deliberately.
 # Gradle 9.1.0+ is required to RUN on Java 25; the image ships OpenJDK 25.
 ARG GRADLE_VERSION=9.7.1
