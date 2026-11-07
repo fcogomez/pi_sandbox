@@ -155,14 +155,11 @@ ARG HINDSIGHT_CLI_VERSION=0.10.0
 ARG HINDSIGHT_CLI_SHA256=02160d71a0ecafda1df7cceab4446362d76500dfa2c3b768d773b86e423e8f19
 ARG HINDSIGHT_CLI_URL=https://github.com/vectorize-io/hindsight/releases/download/${HINDSIGHT_CLI_VERSION}/hindsight-linux-amd64
 RUN set -euxo pipefail \
-    && HS_URL="${HINDSIGHT_CLI_URL}" \
-    && LOC="$(curl -sI "$HS_URL" | grep -i '^location:' | sed 's/location: //i' | tr -d '\r\n' || true)" \
-    && if [ -n "$LOC" ]; then curl -fsSL "$LOC" -o /tmp/hindsight; \
-       else curl -fsSL "$HS_URL" -o /tmp/hindsight; fi \
+    && curl -fSL "${HINDSIGHT_CLI_URL}" -o /tmp/hindsight \
     && echo "${HINDSIGHT_CLI_SHA256}  /tmp/hindsight" | sha256sum -c - \
     && install -m 0755 -o "${PI_UID}" -g "${PI_GID}" /tmp/hindsight "${PI_LOCAL_BIN}/hindsight" \
     && rm -f /tmp/hindsight \
-    && hindsight version
+    && hindsight --version
 
 # ---------------------------------------------------------------------------
 # MCP bridge (mcp mode)
