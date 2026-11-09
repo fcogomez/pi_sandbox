@@ -45,10 +45,14 @@ git pull                      # this repo
 cd proxy
 bash install.sh
 # edit ~/acp-proxy/config.json:
-#   wsUrl  : the Unraid host:port for acp serve (e.g. ws://<unraid-ip>:3123),
-#            or ws://127.0.0.1:<tunnel-port> if the port is not reachable on
-#            the LAN and you front it with an SSH tunnel — the ticket
-#            forbids Internet exposure, so keep it private-path only
+#   wsUrl  : the LAN route through the Unraid host's Traefik, e.g.
+#            ws://pi.local  (plain, port 80) or
+#            wss://pi.local (Traefik TLS entrypoint — the ACP server
+#            stays plain ws behind it). The domain comes from
+#            PI_ACP_DOMAIN in the Unraid stack's .env (default: pi.local).
+#            Stricter alternative: an SSH tunnel to a loopback port,
+#            ws://127.0.0.1:<tunnel-port>. No host port is published
+#            and nothing is Internet-exposed.
 #   apiKey : the PI_ACP_API_KEY the pi-sandbox adapter was started with
 ```
 
