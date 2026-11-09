@@ -138,14 +138,23 @@ services:
     command: ["acp"]
     expose:
       - "${PI_ACP_PORT:-3123}"
-    # Traefik router (LAN-only; the project's default network is the
-    # external traefik network, so no port publish is needed).
+    # Traefik router (LAN-only). The project's default network is the
+    # external traefik network, so no port publish is needed.
     # The WS server serves every path, so a Host() rule suffices.
-    # Entry points copied from the working truckrouting labels on this host.
+    # Defaults match the Unraid host's Traefik (conf/):
+    #   entry point "https" (:443); "http" (:80) auto-redirects to it
+    #   certresolver "production" = Let's Encrypt via Cloudflare DNS
+    #   challenge — PI_ACP_DOMAIN needs a Cloudflare DNS record, the
+    #   cert is auto-issued, no ports opened
+    #   middleware "secured" = RFC1918 IP whitelist + security headers,
+    #   so the endpoint answers only to LAN clients despite the public
+    #   domain
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.pi-acp.rule=Host(${PI_ACP_DOMAIN:-pi.local})"
-      - "traefik.http.routers.pi-acp.entrypoints=${PI_ACP_ENTRYPOINTS:-web,websecure}"
+      - "traefik.http.routers.pi-acp.rule=Host(${PI_ACP_DOMAIN:-pi.example.lan})"
+      - "traefik.http.routers.pi-acp.entrypoints=${PI_ACP_ENTRYPOINTS:-https}"
+      - "traefik.http.routers.pi-acp.tls.certresolver=${PI_ACP_CERTRESOLVER:-production}"
+      - "traefik.http.routers.pi-acp.middlewares=${PI_ACP_MIDDLEWARES:-secured}"
       - "traefik.http.services.pi-acp.loadbalancer.server.port=${PI_ACP_PORT:-3123}"
 
 volumes:

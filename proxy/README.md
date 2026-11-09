@@ -46,13 +46,13 @@ cd proxy
 bash install.sh
 # edit ~/acp-proxy/config.json:
 #   wsUrl  : the LAN route through the Unraid host's Traefik, e.g.
-#            ws://pi.local  (plain, port 80) or
-#            wss://pi.local (Traefik TLS entrypoint — the ACP server
-#            stays plain ws behind it). The domain comes from
-#            PI_ACP_DOMAIN in the Unraid stack's .env (default: pi.local).
-#            Stricter alternative: an SSH tunnel to a loopback port,
-#            ws://127.0.0.1:<tunnel-port>. No host port is published
-#            and nothing is Internet-exposed.
+#            wss://pi.<yourdomain> — the domain is PI_ACP_DOMAIN in the
+#            Unraid stack's .env (a name under your Cloudflare domain with
+#            the DNS A record added; the Let's Encrypt cert is auto-issued).
+#            The host's "secured" middleware chain (LAN IP whitelist +
+#            security headers) keeps it reachable only from LAN clients.
+#            Stricter alternative: an SSH tunnel,
+#            ws://127.0.0.1:<tunnel-port>. No host port is published.
 #   apiKey : the PI_ACP_API_KEY the pi-sandbox adapter was started with
 ```
 
