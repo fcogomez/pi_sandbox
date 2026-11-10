@@ -129,6 +129,11 @@ services:
       PI_TELEMETRY: 0
       PI_ACP_API_KEY: ${PI_ACP_API_KEY}
       PI_ACP_PORT: ${PI_ACP_PORT:-3123}
+      # Bind all container interfaces. Required for network reachability:
+      # the server defaults to 127.0.0.1 (container loopback) when unset.
+      # Safe — the port is not published to the host; reachability is via
+      # the Docker network (Traefik) only.
+      PI_ACP_HOST: ${PI_ACP_HOST:-0.0.0.0}
     volumes:
       - ${HOST_WORKSPACE:-/path/to/your/workspace}:/home/pi/workspace
       - pi-agent-home:/home/pi/.pi/agent
