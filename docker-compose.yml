@@ -154,7 +154,7 @@ services:
       - "traefik.http.routers.pi-acp.rule=Host(${PI_ACP_DOMAIN:-pi.example.lan})"
       - "traefik.http.routers.pi-acp.entrypoints=${PI_ACP_ENTRYPOINTS:-https}"
       - "traefik.http.routers.pi-acp.tls.certresolver=${PI_ACP_CERTRESOLVER:-production}"
-      - "traefik.http.routers.pi-acp.middlewares=${PI_ACP_MIDDLEWARES:-secured}"
+      - "traefik.http.routers.pi-acp.middlewares=${PI_ACP_MIDDLEWARES:-secured@file}"
       - "traefik.http.services.pi-acp.loadbalancer.server.port=${PI_ACP_PORT:-3123}"
 
 volumes:
