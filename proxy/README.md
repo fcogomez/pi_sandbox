@@ -35,7 +35,7 @@ in both directions (the server normalizes inbound frames to end with LF).
 | `acp-proxy.mjs` | The proxy (single file, only dep: `ws`) |
 | `package.json` | Package metadata; install `ws` once: `npm ci` or `npm i` |
 | `config.example.json` | Template: `wsUrl` + `apiKey` |
-| `install.sh` | Mac install: copies to `~/acp-proxy`, creates 600 config, prints Xcode registration values |
+| `install.sh` | Mac install: copies code to `~/acp-proxy`, creates the 600 config at the proxy's default path (`~/Library/Application Support/acp-proxy/config.json`), prints Xcode registration values |
 | `com.pi.acp-proxy.plist` | OPTIONAL launchd agent for standalone use (Xcode launches the proxy itself during sessions) |
 
 ## Install (on the Mac Mini)
@@ -44,7 +44,7 @@ in both directions (the server normalizes inbound frames to end with LF).
 git pull                      # this repo
 cd proxy
 bash install.sh
-# edit ~/acp-proxy/config.json:
+# edit ~/Library/Application Support/acp-proxy/config.json:
 #   wsUrl  : the LAN route through the Unraid host's Traefik, e.g.
 #            wss://pi.<yourdomain> — the domain is PI_ACP_DOMAIN in the
 #            Unraid stack's .env (a name under your Cloudflare domain with

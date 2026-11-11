@@ -5,10 +5,15 @@ set -euo pipefail
 
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEST_DIR="${ACP_PROXY_DEST:-$HOME/acp-proxy}"
+# Config lives at the proxy's default lookup path (macOS convention), so
+# the proxy finds it without env vars. Overridable via ACP_PROXY_CONFIG.
+CONFIG_DIR="$HOME/Library/Application Support/acp-proxy"
+CONFIG_PATH="$CONFIG_DIR/config.json"
 
 echo "== acp-proxy install =="
 echo "source : $SRC_DIR"
 echo "target : $DEST_DIR"
+echo "config : $CONFIG_PATH"
 
 # 1. Node check
 if ! command -v node >/dev/null 2>&1; then
@@ -19,7 +24,7 @@ NODE_BIN="$(command -v node)"
 NODE_VER="$(node --version)"
 echo "node   : $NODE_BIN ($NODE_VER)"
 case "$NODE_VER" in
-  v1[0-9].*|v20.*|v21.*) echo "ERROR: Node >= 22 required (found $NODE_VER)." >&2; exit 1 ;;
+  v1[0-9].*|v20.*|v21.*) echo "ERROR: Node >= 22 required (found $NODE_VER)."; exit 1 ;;
 esac
 
 # 2. Copy files
@@ -29,23 +34,27 @@ cp "$SRC_DIR/package.json" "$DEST_DIR/"
 chmod 700 "$DEST_DIR"
 
 # 3. Config (never overwrite an existing one)
-if [ ! -f "$DEST_DIR/config.json" ]; then
-  cp "$SRC_DIR/config.example.json" "$DEST_DIR/config.json"
-  chmod 600 "$DEST_DIR/config.json"
-  echo "config : created $DEST_DIR/config.json  (EDIT THIS: wsUrl + apiKey)"
+mkdir -p "$CONFIG_DIR"
+if [ ! -f "$CONFIG_PATH" ] && [ -f "$DEST_DIR/config.json" ]; then
+  # migrate: earlier install.sh versions created the config in DEST_DIR
+  mv "$DEST_DIR/config.json" "$CONFIG_PATH"
+  echo "config : migrated $DEST_DIR/config.json -> $CONFIG_PATH"
+elif [ ! -f "$CONFIG_PATH" ]; then
+  cp "$SRC_DIR/config.example.json" "$CONFIG_PATH"
+  echo "config : created $CONFIG_PATH  (EDIT THIS: wsUrl + apiKey)"
 else
-  chmod 600 "$DEST_DIR/config.json"
-  echo "config : kept existing $DEST_DIR/config.json (chmod 600)"
+  echo "config : kept existing $CONFIG_PATH"
 fi
+chmod 600 "$CONFIG_PATH"
 
 # 4. Verify
 echo "== config check =="
-ACP_PROXY_CONFIG="$DEST_DIR/config.json" node "$DEST_DIR/acp-proxy.mjs" --check
+ACP_PROXY_CONFIG="$CONFIG_PATH" node "$DEST_DIR/acp-proxy.mjs" --check
 echo "config OK"
 
 echo
 echo "== done =="
-echo "Edit $DEST_DIR/config.json (wsUrl + apiKey) if not done already."
+echo "Edit $CONFIG_PATH (wsUrl + apiKey) if not done already."
 echo
 echo "Xcode registration (Settings > Intelligence > Agents > Add an Agent):"
 echo "  name   : Pi"
