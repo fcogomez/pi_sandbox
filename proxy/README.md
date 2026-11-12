@@ -56,7 +56,8 @@ bash install.sh
 #   apiKey : the PI_ACP_API_KEY the pi-sandbox adapter was started with
 ```
 
-Install the `ws` dependency on the Mac (once):
+`install.sh` installs the `ws` dependency automatically (step "deps").
+If you ever wipe `~/acp-proxy/node_modules`, reinstall it with:
 
 ```bash
 cd ~/acp-proxy && npm i        # or: npm ci

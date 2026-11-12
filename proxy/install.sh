@@ -27,11 +27,13 @@ case "$NODE_VER" in
   v1[0-9].*|v20.*|v21.*) echo "ERROR: Node >= 22 required (found $NODE_VER)."; exit 1 ;;
 esac
 
-# 2. Copy files
+# 2. Copy files + dependencies (ws)
 mkdir -p "$DEST_DIR"
 cp "$SRC_DIR/acp-proxy.mjs" "$DEST_DIR/"
 cp "$SRC_DIR/package.json" "$DEST_DIR/"
 chmod 700 "$DEST_DIR"
+(cd "$DEST_DIR" && npm install --omit=dev --no-audit --no-fund)
+echo "deps   : ws installed in $DEST_DIR"
 
 # 3. Config (never overwrite an existing one)
 mkdir -p "$CONFIG_DIR"
