@@ -247,12 +247,23 @@ export class PiAcpAgent implements Agent {
     // exist on ACP 0.26.0 AgentCapabilities for those. A3: session
     // persistence IS implemented — advertise exactly the two persistence
     // capabilities (locked A3 decision #6) and nothing else.
+    //
+    // C2 (2026-11-12): Xcode 27.2 rejects the initialize response when
+    // schema-defaulted fields are OMITTED ("The data couldn't be read
+    // because it is missing" — its decoder treats fields that carry a
+    // schema `default` as mandatory keys). Send the full capability set
+    // explicitly with "not supported" values. Schema-valid either way
+    // (all fields optional), robust to strict decoders.
     return {
       protocolVersion: PROTOCOL_VERSION,
       agentCapabilities: {
         loadSession: true,
+        promptCapabilities: { image: false, audio: false, embeddedContext: false },
+        mcpCapabilities: { http: false, sse: false },
         sessionCapabilities: { resume: {} },
+        auth: {},
       },
+      authMethods: [],
       agentInfo: {
         name: "pi-acp-adapter",
         title: "pi ACP Adapter",
