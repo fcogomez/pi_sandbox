@@ -1,4 +1,5 @@
 {
   "wsUrl": "ws://127.0.0.1:3123",
-  "apiKey": "REPLACE_WITH_PI_ACP_API_KEY_VALUE"
+  "apiKey": "***",
+  "debug": false
 }

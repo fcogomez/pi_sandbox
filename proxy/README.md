@@ -107,6 +107,13 @@ cd ~/acp-proxy && npm i        # or: npm ci
   exits (works before `ws` is installed, which `--version` also does).
   Recommend `chmod 600` on the config file (the proxy warns on a
   world-readable config).
+- **Debug frame log:** set `"debug": true` in the config file. Every
+  JSON-RPC frame (both directions, plus the proxy's internal
+  re-initialize) is appended to `~/Library/Logs/acp-proxy.log` (chmod
+  600, capped at ~5MB, truncated on new runs). Use it when a client
+  (e.g. Xcode) rejects a response — the log shows the exact frames
+  exchanged. Frames may contain prompt text and code; the file never
+  leaves the Mac.
 
 ## Verify without Xcode
 

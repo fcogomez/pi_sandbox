@@ -33,7 +33,14 @@
  * session/resume re-attaches. F1 gate 4 exercises exactly this.
  */
 
-import { readFileSync, statSync } from "node:fs";
+import {
+  readFileSync,
+  statSync,
+  appendFileSync,
+  writeFileSync,
+  mkdirSync,
+  chmodSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
@@ -108,7 +115,7 @@ function loadConfig(path) {
   } catch {
     /* ignore */
   }
-  return { wsUrl, apiKey };
+  return { wsUrl, apiKey, debug: cfg.debug === true };
 }
 
 // ---- main -----------------------------------------------------------------
@@ -125,6 +132,49 @@ if (args.check) {
 }
 
 log("info", "start", { version: VERSION, wsUrl: cfg.wsUrl, config: args.config });
+
+// ---- optional frame logging (config "debug": true) ------------------------
+// Appends every JSON-RPC frame, both directions, to a local log file so
+// client-side failures (e.g. an Xcode decode error) can be diagnosed
+// against the actual traffic. Frames may contain prompt text and code;
+// the file is 600 and never leaves the Mac.
+let frameLogPath = null;
+if (cfg.debug) {
+  frameLogPath = join(homedir(), "Library/Logs/acp-proxy.log");
+  try {
+    mkdirSync(join(homedir(), "Library/Logs"), { recursive: true });
+    let size = 0;
+    try {
+      size = statSync(frameLogPath).size;
+    } catch {
+      size = -1; // first run: no log file yet
+    }
+    if (size < 0 || size > 5 * 1024 * 1024) writeFileSync(frameLogPath, ""); // create / cap ~5MB
+    chmodSync(frameLogPath, 0o600);
+    log("info", "frame_logging", { path: frameLogPath });
+  } catch (err) {
+    log("warn", "frame_logging_unavailable", { message: err.message });
+    frameLogPath = null;
+  }
+}
+
+function logFrame(dir, raw) {
+  if (!frameLogPath) return;
+  let frame;
+  try {
+    frame = JSON.parse(raw);
+  } catch {
+    frame = raw.length > 4096 ? raw.slice(0, 4096) + "…[truncated]" : raw;
+  }
+  try {
+    appendFileSync(
+      frameLogPath,
+      JSON.stringify({ ts: new Date().toISOString(), dir, frame }) + "\n",
+    );
+  } catch {
+    /* logging must never break the transport */
+  }
+}
 
 // Build the auth scheme at runtime so no "Bearer <token>" literal exists in
 // the source (the shared mount's secret scanner rewrites such literals).
@@ -177,6 +227,7 @@ async function connect() {
   });
   ws.on("message", (data) => {
     const s = data.toString("utf8");
+    logFrame("s2c", s);
     // Swallow the response to our internal auto-initialize; the client
     // already got its own initialize result.
     try {
@@ -226,7 +277,9 @@ function sendAutoInit() {
   try {
     const parsed = JSON.parse(clientInitFrame);
     parsed.id = AUTO_INIT_ID;
-    ws.send(JSON.stringify(parsed));
+    const sent = JSON.stringify(parsed);
+    logFrame("c2s_autoinit", sent);
+    ws.send(sent);
     needsAutoInit = true; // hold all client frames until the ack
     log("info", "auto_init_sent", { method: parsed.method });
   } catch (err) {
@@ -286,6 +339,7 @@ process.stdin.on("data", (chunk) => {
     const trimmed = line.trim();
     if (!trimmed) continue;
     maybeTrackInit(trimmed);
+    logFrame("c2s", trimmed);
     // Hold while a reconnect is re-initializing the fresh server-side
     // agent: the auto-init frame must reach it before any client frame.
     if (ws && ws.readyState === WS_OPEN && !needsAutoInit) {
