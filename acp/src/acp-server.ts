@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { access } from "node:fs/promises";
-import { dirname, resolve as resolvePath } from "node:path";
+import { access, stat } from "node:fs/promises";
+import { homedir } from "node:os";
+import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   PROTOCOL_VERSION,
@@ -727,6 +728,33 @@ export class PiAcpAgent implements Agent {
   // ---------------------------------------------------------------------
 
   /**
+   * Map the client's session cwd to a directory that exists on the server
+   * host. The client sends its own local path (Xcode sends its Mac sandbox
+   * directory), which generally does not exist on the host — and spawn()
+   * with a nonexistent cwd fails with ENOENT, indistinguishable from a
+   * missing pi binary (C2 field bug, 2026-11-13: Xcode session/new ->
+   * "spawn pi ENOENT"). Fallback order: the client's cwd (when present
+   * here) -> PI_ACP_WORKSPACE -> <home>/workspace -> <home>.
+   */
+  private async resolveWorkdir(clientCwd: string): Promise<string> {
+    const candidates = [
+      clientCwd,
+      process.env.PI_ACP_WORKSPACE,
+      join(homedir(), "workspace"),
+    ].filter((c): c is string => typeof c === "string" && c.length > 0);
+    for (const c of candidates) {
+      try {
+        if ((await stat(c)).isDirectory()) return c;
+      } catch {
+        /* try the next candidate */
+      }
+    }
+    const home = homedir();
+    this.log(`client cwd ${clientCwd} not available on host; falling back to ${home}`);
+    return home;
+  }
+
+  /**
    * Spawn a fresh `pi --mode rpc` exactly like `newSession` does (same
    * extension + env) and wire it: `new_session`, optional `switch_session`
    * (load/resume), and thinking-level application. Closes the child and
@@ -736,9 +764,13 @@ export class PiAcpAgent implements Agent {
     cwd: string,
     opts: { resumeFrom?: { sessionFile: string; thinkingLevel: string } } = {},
   ): Promise<SpawnedSession> {
+    const workdir = await this.resolveWorkdir(cwd);
+    if (workdir !== cwd) {
+      this.log(`client cwd ${cwd} not on host; using ${workdir}`);
+    }
     const rpc = new PiRpc({
       spawner: this.spawner,
-      cwd,
+      cwd: workdir,
       log: this.log,
       // Load the bundled extension (permission gate + read override) and
       // tell it which tools to gate / whether read is delegated to the client.
@@ -750,7 +782,7 @@ export class PiAcpAgent implements Agent {
     });
     rpc.start();
     try {
-      await rpc.request("new_session", { cwd });
+      await rpc.request("new_session", { cwd: workdir });
       const thinking = new ThinkingController(rpc);
       const availableLevels = await thinking.getAvailableLevels();
 
