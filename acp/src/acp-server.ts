@@ -1155,10 +1155,30 @@ export class PiAcpAgent implements Agent {
 
 /**
  * Pull pi streaming delta blocks out of a `message_update` record.
- * Tolerates `delta` (object or array) and `content` (array of blocks).
+ *
+ * pi >= 1.x shape (verified 1.5.2, 2026-11-13 — the C2 Xcode "no response"
+ * field bug: 0.85.x-only parsing matched nothing, so no session/update
+ * notifications reached the client):
+ *   { type: "message_update", usage, assistantMessageEvent: {
+ *       type: "text_delta" | "thinking_delta", contentIndex, delta: "..." } }
+ * (text_start/text_end/thinking_start/thinking_end carry no new text.)
+ *
+ * pi 0.85.x shape (legacy, kept for older pins): `delta` (object or array
+ * of blocks) and/or `content` (array of blocks), blocks
+ * { type: "text" | "thinking", text }.
  */
 function extractDeltaBlocks(ev: PiRecord): Array<{ type?: unknown; text?: unknown }> {
   const out: Array<{ type?: unknown; text?: unknown }> = [];
+  const ame = ev.assistantMessageEvent;
+  if (ame && typeof ame === "object") {
+    const t = (ame as Record<string, unknown>).type;
+    const d = (ame as Record<string, unknown>).delta;
+    if (typeof d === "string" && d.length > 0) {
+      if (t === "text_delta") out.push({ type: "text", text: d });
+      else if (t === "thinking_delta") out.push({ type: "thinking", text: d });
+    }
+    return out; // 1.x nesting present: no legacy fields to fall back to
+  }
   const delta = ev.delta;
   if (Array.isArray(delta)) out.push(...(delta as Array<Record<string, unknown>>));
   else if (delta && typeof delta === "object") out.push(delta as Record<string, unknown>);

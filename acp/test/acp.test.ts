@@ -235,6 +235,51 @@ test("session/prompt: streams thought + message chunks, final usage, stop reason
   }
 });
 
+test("session/prompt: pi >= 1.x message_update shape (assistantMessageEvent) streams chunks (C2, pi 1.5.2)", async () => {
+  // Regression for the Xcode "no response" field bug: pi 1.5.2 nests the
+  // delta in assistantMessageEvent (text_delta/thinking_delta), which the
+  // 0.85.x-only parser silently dropped — no session/update notifications
+  // ever reached the client.
+  const fake = new FakePi({
+    messageUpdateShape: "v1x",
+    thinkingDeltas: ["Hmmm, ", "let me reason."],
+    textDeltas: ["Answer: ", "42"],
+    usage: { input: 5, output: 7, thought: 2 },
+  });
+  const h = makeHarness({ fake });
+  try {
+    await h.conn.initialize(INIT_PARAMS);
+    const ns = await h.conn.newSession({ cwd: "/tmp/work", mcpServers: [] });
+
+    const res = await h.conn.prompt({
+      sessionId: ns.sessionId,
+      prompt: [{ type: "text", text: "What is the answer?" }],
+    });
+
+    assert.equal(res.stopReason, "end_turn");
+
+    const chunks = h.client.updates.map((u) => u.update);
+    const chunkText = (c: SessionUpdate): string =>
+      (c as ContentChunk).content.type === "text"
+        ? ((c as ContentChunk).content as TextContent).text
+        : "";
+    const thoughtChunks = chunks.filter((c) => c.sessionUpdate === "agent_thought_chunk");
+    const messageChunks = chunks.filter((c) => c.sessionUpdate === "agent_message_chunk");
+
+    assert.ok(thoughtChunks.length >= 1, "v1x: must stream agent_thought_chunk(s)");
+    assert.ok(messageChunks.length >= 1, "v1x: must stream agent_message_chunk(s)");
+    assert.equal(thoughtChunks.map(chunkText).join(""), "Hmmm, let me reason.");
+    assert.equal(messageChunks.map(chunkText).join(""), "Answer: 42");
+    assert.equal(chunks[0].sessionUpdate, "agent_thought_chunk");
+
+    for (const u of h.client.updates) {
+      assert.equal(u.sessionId, ns.sessionId);
+    }
+  } finally {
+    await h.close();
+  }
+});
+
 test("thinking controls: set / get_state / get_available / cycle map onto pi RPC", async () => {
   const h = makeHarness();
   try {

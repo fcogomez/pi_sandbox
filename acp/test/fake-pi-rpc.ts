@@ -98,6 +98,15 @@ export interface FakePiOptions {
   thinkingDeltas?: string[];
   /** Canned text deltas streamed as message_update (type "text"). */
   textDeltas?: string[];
+  /**
+   * Wire shape for message_update records:
+   *   "legacy" — pi 0.85.x: `delta: { type: "text"|"thinking", text }`
+   *   "v1x"    — pi >= 1.0 (verified 1.5.2, 2026-11-13):
+   *              `assistantMessageEvent: { type: "text_delta"|"thinking_delta",
+   *                contentIndex, delta }`
+   * Default "legacy" (keeps existing tests on the 0.85.x shapes).
+   */
+  messageUpdateShape?: "legacy" | "v1x";
   /** Usage reported on the final assistant message in agent_end. */
   usage?: { input: number; output: number; thought?: number };
   /** Prompt behavior (A2; default "text-only" = A1 behavior). */
@@ -162,6 +171,7 @@ export class FakePi implements PiProcessLike {
   private level: string;
   private readonly thinkingDeltas: string[];
   private readonly textDeltas: string[];
+  private readonly messageUpdateShape: "legacy" | "v1x";
   private readonly usage: { input: number; output: number; thought?: number };
   private readonly behavior: FakePromptBehavior;
   private readonly toolSpec: FakeToolSpec;
@@ -191,6 +201,7 @@ export class FakePi implements PiProcessLike {
       options.initialLevel ?? (this.availableLevels.includes("medium") ? "medium" : this.availableLevels[0]);
     this.thinkingDeltas = options.thinkingDeltas ?? ["Let me think…", " …done thinking."];
     this.textDeltas = options.textDeltas ?? ["Hello", " world"];
+    this.messageUpdateShape = options.messageUpdateShape ?? "legacy";
     this.usage = options.usage ?? { input: 11, output: 22, thought: 3 };
     this.behavior = options.promptBehavior ?? "text-only";
     this.toolSpec = options.tool ?? {};
@@ -405,19 +416,27 @@ export class FakePi implements PiProcessLike {
         { type: "message_start", messageId, role: "assistant" },
       ];
       // Verified pi order: thinking deltas precede text deltas within the run.
-      const preText: Array<Record<string, unknown>> =
-        this.behavior === "text-only"
-          ? this.thinkingDeltas.map((d) => ({
+      // Wire shape per this.messageUpdateShape (see FakePiOptions).
+      const mkUpdate = (kind: "text" | "thinking", d: string): Record<string, unknown> =>
+        this.messageUpdateShape === "v1x"
+          ? {
               type: "message_update",
               messageId,
-              delta: { type: "thinking", text: d },
-            }))
+              usage: { input: 0, output: 0, totalTokens: 0 },
+              assistantMessageEvent: {
+                type: kind === "text" ? "text_delta" : "thinking_delta",
+                contentIndex: kind === "text" ? 1 : 0,
+                delta: d,
+              },
+            }
+          : { type: "message_update", messageId, delta: { type: kind, text: d } };
+      const preText: Array<Record<string, unknown>> =
+        this.behavior === "text-only"
+          ? this.thinkingDeltas.map((d) => mkUpdate("thinking", d))
           : [];
-      const textUpdates: Array<Record<string, unknown>> = this.textDeltas.map((d) => ({
-        type: "message_update",
-        messageId,
-        delta: { type: "text", text: d },
-      }));
+      const textUpdates: Array<Record<string, unknown>> = this.textDeltas.map((d) =>
+        mkUpdate("text", d),
+      );
       const tail: Array<Record<string, unknown>> = [
         { type: "message_end", messageId, role: "assistant" },
         { type: "turn_end" },
