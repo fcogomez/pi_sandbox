@@ -9,6 +9,8 @@ import {
   type RequestPermissionRequest,
   type RequestPermissionResponse,
   type SessionNotification,
+  type WriteTextFileRequest,
+  type WriteTextFileResponse,
 } from "@agentclientprotocol/sdk";
 import { PiAcpAgent } from "../src/acp-server.js";
 import type { AcpConfig } from "../src/config.js";
@@ -18,10 +20,11 @@ import { FakePi } from "./fake-pi-rpc.js";
  * Configurable FAKE ACP client for A2 unit tests (ticket ACP-A2).
  *
  * It records `sessionUpdate` notifications plus the ACP requests it is
- * asked to answer (`requestPermission`, `readTextFile`) and responds with
- * configurable values. The client is driven over an in-memory pair of
- * TransformStreams through the real SDK `ClientSideConnection`, so the
- * tests exercise the actual ACP wire framing. Fully offline.
+ * asked to answer (`requestPermission`, `readTextFile`, `writeTextFile`)
+ * and responds with configurable values. The client is driven over an
+ * in-memory pair of TransformStreams through the real SDK
+ * `ClientSideConnection`, so the tests exercise the actual ACP wire
+ * framing. Fully offline.
  */
 
 export interface FakeAcpClientOptions {
@@ -39,6 +42,13 @@ export interface FakeAcpClientOptions {
   respondReadTextFile?: (
     params: ReadTextFileRequest,
   ) => ReadTextFileResponse | Promise<ReadTextFileResponse>;
+  /**
+   * How the client answers `fs/write_text_file`.
+   * Default: success.
+   */
+  respondWriteTextFile?: (
+    params: WriteTextFileRequest,
+  ) => WriteTextFileResponse | Promise<WriteTextFileResponse>;
 }
 
 export class FakeAcpClient implements Client {
@@ -48,13 +58,17 @@ export class FakeAcpClient implements Client {
   readonly permissionRequests: RequestPermissionRequest[] = [];
   /** Every readTextFile request received, in order. */
   readonly readTextFileRequests: ReadTextFileRequest[] = [];
+  /** Every writeTextFile request received, in order. */
+  readonly writeTextFileRequests: WriteTextFileRequest[] = [];
 
   private readonly respondPermission?: FakeAcpClientOptions["respondPermission"];
   private readonly respondReadTextFile?: FakeAcpClientOptions["respondReadTextFile"];
+  private readonly respondWriteTextFile?: FakeAcpClientOptions["respondWriteTextFile"];
 
   constructor(options: FakeAcpClientOptions = {}) {
     this.respondPermission = options.respondPermission;
     this.respondReadTextFile = options.respondReadTextFile;
+    this.respondWriteTextFile = options.respondWriteTextFile;
   }
 
   async sessionUpdate(params: SessionNotification): Promise<void> {
@@ -76,6 +90,11 @@ export class FakeAcpClient implements Client {
     this.readTextFileRequests.push(params);
     return this.respondReadTextFile?.(params) ?? { content: "" };
   }
+
+  async writeTextFile(params: WriteTextFileRequest): Promise<WriteTextFileResponse> {
+    this.writeTextFileRequests.push(params);
+    return this.respondWriteTextFile?.(params) ?? {};
+  }
 }
 
 /**
@@ -86,6 +105,17 @@ export class FakeAcpClient implements Client {
 export const DEFAULT_INIT_PARAMS: InitializeRequest = {
   protocolVersion: 1,
   clientCapabilities: { fs: { readTextFile: true } },
+  clientInfo: { name: "test-client", version: "0.1.0" },
+};
+
+/**
+ * C3: initialize params that ALSO advertise `fs.writeTextFile` support
+ * (mirrors DEFAULT_INIT_PARAMS with the write capability flag on). To
+ * toggle the flag OFF, initialize with `clientCapabilities: {}`.
+ */
+export const DEFAULT_INIT_PARAMS_WITH_WRITE: InitializeRequest = {
+  protocolVersion: 1,
+  clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } },
   clientInfo: { name: "test-client", version: "0.1.0" },
 };
 

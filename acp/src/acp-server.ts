@@ -35,7 +35,13 @@ import {
   type AcpConfig,
   type ThinkingLevel,
 } from "./config.js";
-import { handleReadDelegation, READ_TITLE_PREFIX } from "./fs-delegation.js";
+import {
+  handleReadDelegation,
+  handleWriteDelegation,
+  parseWriteTitle,
+  READ_TITLE_PREFIX,
+  WRITE_TITLE_PREFIX,
+} from "./fs-delegation.js";
 import {
   parsePermTitle,
   requestToolPermission,
@@ -73,6 +79,8 @@ interface ManagedSession {
   rpc: PiRpc;
   thinking: ThinkingController;
   cwd: string;
+  /** C3: mapped workdir the pi process runs in (extension ctx.cwd). */
+  workdir: string;
   /** Thinking levels the model supports (as reported by pi). */
   availableLevels: ThinkingLevel[];
   /** Level currently in effect for this session. */
@@ -94,6 +102,13 @@ interface ManagedSession {
   createdAt: string;
   /** A3: ISO timestamp of the most recent use (mirrors the disk map). */
   lastUsedAt: string;
+  /**
+   * C3: in-flight write-tool args, keyed by toolCallId, stored from
+   * `tool_execution_start` (toolName "write" only). Consumed by the
+   * `[acp:write]` extension_ui_request branch (entry deleted after use)
+   * and cleared on `agent_settled`.
+   */
+  writeArgs: Map<string, { path: string; content: string }>;
   /** Unsubscribe from pi extension_ui_request records. */
   unsubscribeUi?: () => void;
   /**
@@ -117,6 +132,12 @@ interface SpawnedSession {
   thinking: ThinkingController;
   availableLevels: ThinkingLevel[];
   thinkingLevel: ThinkingLevel;
+  /**
+   * C3: the MAPPED workdir the pi process actually runs in (the client's
+   * cwd when it exists on the host, else the fallback). The pi extension's
+   * `ctx.cwd` is this directory, so relative tool paths resolve against it.
+   */
+  workdir: string;
 }
 
 /**
@@ -141,6 +162,14 @@ interface SpawnedSession {
  *     to ACP `fs/read_text_file` (src/fs-delegation.ts); unsupported clients
  *     get `cancelled: true` so the extension falls back locally
  *
+ * C3 scope:
+ *   - the extension's write delegation input (`[acp:write] <toolCallId>
+ *     <path>`) is bridged to ACP `fs/write_text_file` (src/fs-delegation.ts);
+ *     the write args (path + content) are stored per session from
+ *     `tool_execution_start` and verified against the title (mismatch guard);
+ *     unsupported clients get `cancelled: true` so the extension falls back
+ *     to a local write
+ *
  * A3 scope:
  *   - session map persisted as a JSON file (src/session-map.ts): populated
  *     in `session/new` from pi `get_state`, refreshed on load/resume
@@ -159,8 +188,10 @@ interface SpawnedSession {
  *   - `session/list`, `session/delete`, `session/fork`, `session/close`
  *   - ACP runtime `session/set_mode` / `session/set_config_option` override
  *     of the thinking level
- *   - fs/write_text_file delegation, persistent "always allow/reject",
- *     MCP server wiring (load/resume `mcpServers` are accepted + ignored)
+ *   - edit-tool delegation (needs delegated read-modify-write; ticket C4),
+ *     bash/mkdir/delete delegation (no ACP fs op), persistent
+ *     "always allow/reject", MCP server wiring (load/resume `mcpServers`
+ *     are accepted + ignored)
  */
 export class PiAcpAgent implements Agent {
   private readonly config: AcpConfig;
@@ -806,7 +837,7 @@ export class PiAcpAgent implements Agent {
           )
         : await this.applyDefaultThinkingLevel(rpc, availableLevels);
 
-      return { rpc, thinking, availableLevels, thinkingLevel };
+      return { rpc, thinking, availableLevels, thinkingLevel, workdir };
     } catch (err) {
       rpc.close();
       throw err;
@@ -828,6 +859,7 @@ export class PiAcpAgent implements Agent {
       rpc: spawn.rpc,
       thinking: spawn.thinking,
       cwd,
+      workdir: spawn.workdir,
       availableLevels: spawn.availableLevels,
       thinkingLevel: spawn.thinkingLevel,
       promptInFlight: false,
@@ -838,10 +870,12 @@ export class PiAcpAgent implements Agent {
       sessionFile: null,
       createdAt: now,
       lastUsedAt: now,
+      writeArgs: new Map(),
     };
     // Bridge the bundled extension's UI dialogs to the ACP client:
-    //   select `[acp:perm] ...`  -> session/request_permission
-    //   input  `[acp:read] ...`  -> fs/read_text_file
+    //   select `[acp:perm] ...`   -> session/request_permission
+    //   input  `[acp:read] ...`   -> fs/read_text_file
+    //   input  `[acp:write] ...`  -> fs/write_text_file (C3)
     session.unsubscribeUi = spawn.rpc.onExtensionUiRequest((req) => {
       void this.handleExtensionUiRequest(session, req).catch((err) =>
         this.log(`extension_ui handling failed: ${String(err)}`),
@@ -1020,6 +1054,9 @@ export class PiAcpAgent implements Agent {
         // B2: the turn is over (completed or aborted). Resolve the in-flight
         // ACP session/prompt now — this is the ACP turn-completion signal.
         // (agent_settled {aborted:true} also arrives for a session/cancel.)
+        // C3: the turn is over, so any un-consumed stored write args are
+        // stale — prune them.
+        session.writeArgs.clear();
         const turn = session.promptTurn;
         if (turn) {
           const aborted = ev.aborted === true || session.cancelRequested;
@@ -1039,6 +1076,16 @@ export class PiAcpAgent implements Agent {
           ev.args && typeof ev.args === "object"
             ? (ev.args as Record<string, unknown>)
             : {};
+        // C3: remember the write tool's args per toolCallId so the
+        // `[acp:write]` extension_ui_request branch can fetch the content
+        // (only "write" args are ever stored, never any other tool's).
+        if (ev.type === "tool_execution_start" && toolName === "write") {
+          const path = typeof args.path === "string" ? args.path : null;
+          const content = typeof args.content === "string" ? args.content : null;
+          if (path !== null && content !== null) {
+            session.writeArgs.set(toolCallId, { path, content });
+          }
+        }
         const update = piToolEventToAcpUpdate(ev, toolCallId, toolName, args, session.cwd);
         if (update) {
           void this.sendUpdate(session, update);
@@ -1065,6 +1112,13 @@ export class PiAcpAgent implements Agent {
    *   - input, title `[acp:read] <absolutePath>`:
    *     delegate to the ACP client via fs/read_text_file; write the content
    *     back, or `cancelled: true` when the client doesn't support it.
+   *   - input, title `[acp:write] <toolCallId> <absolutePath>` (C3):
+   *     delegate to the ACP client via fs/write_text_file using the write
+   *     args stored from tool_execution_start (mismatch guard: the stored
+   *     path, resolved against the session's mapped workdir, must equal the
+   *     title path); write `"ok"` back on success, or `cancelled: true`
+   *     (local fallback) when the capability is missing, the stored entry
+   *     is missing/mismatched, or the write fails.
    *   - anything else: cancel so the extension can proceed.
    */
   private async handleExtensionUiRequest(
@@ -1123,6 +1177,72 @@ export class PiAcpAgent implements Agent {
         rpc.writeExtensionUiResponse(id, undefined, undefined, true);
       } else {
         rpc.writeExtensionUiResponse(id, content);
+      }
+      return;
+    }
+
+    if (method === "input" && title.startsWith(WRITE_TITLE_PREFIX)) {
+      const parsed = parseWriteTitle(title);
+      if (!parsed) {
+        this.log(
+          `write delegation: unparseable title; cancelling (local fallback)`,
+        );
+        rpc.writeExtensionUiResponse(id, undefined, undefined, true);
+        return;
+      }
+      const entry = session.writeArgs.get(parsed.toolCallId);
+      if (entry === undefined) {
+        this.log(
+          `write delegation for ${parsed.path} cancelled: no stored write ` +
+            `args for toolCallId ${parsed.toolCallId}; local fallback`,
+        );
+        rpc.writeExtensionUiResponse(id, undefined, undefined, true);
+        return;
+      }
+      if (
+        this.connection === null ||
+        this.clientCapabilities?.fs?.writeTextFile !== true
+      ) {
+        this.log(
+          `write delegation for ${parsed.path} cancelled: client does not ` +
+            `advertise fs.writeTextFile; local fallback`,
+        );
+        rpc.writeExtensionUiResponse(id, undefined, undefined, true);
+        return;
+      }
+      // Mismatch guard: the stored path resolved against the session's
+      // mapped workdir (the extension's ctx.cwd) must equal the title path.
+      const storedPath = resolvePath(session.workdir, entry.path);
+      if (storedPath !== parsed.path) {
+        this.log(
+          `write delegation mismatch: title path ${parsed.path} != resolved ` +
+            `stored path ${storedPath}; cancelling (local fallback)`,
+        );
+        rpc.writeExtensionUiResponse(id, undefined, undefined, true);
+        return;
+      }
+      try {
+        // content comes from the STORED args, never from the title.
+        const result = await handleWriteDelegation(
+          this.sessionIdFor(session),
+          parsed.path,
+          entry.content,
+          this.connection,
+          this.clientCapabilities,
+        );
+        if (result === "ok") {
+          session.writeArgs.delete(parsed.toolCallId);
+          rpc.writeExtensionUiResponse(id, "ok");
+        } else {
+          this.log(
+            `write delegation for ${parsed.path} cancelled: write not ` +
+              `available on this client; local fallback`,
+          );
+          rpc.writeExtensionUiResponse(id, undefined, undefined, true);
+        }
+      } catch (err) {
+        this.log(`write delegation failed for ${parsed.path}: ${String(err)}`);
+        rpc.writeExtensionUiResponse(id, undefined, undefined, true);
       }
       return;
     }

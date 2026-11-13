@@ -1,6 +1,6 @@
 // @ts-nocheck
 /**
- * Bundled pi extension for the ACP adapter (ticket ACP-A2).
+ * Bundled pi extension for the ACP adapter (tickets ACP-A2 / ACP-C3).
  *
  * Standalone file at the package root — NOT compiled by tsup (the tsup
  * entry stays src/index.ts). The adapter passes this file's absolute path
@@ -31,23 +31,36 @@
  *     read. When ACP_FS_DELEGATION is not "1", it reads locally from the
  *     container filesystem.
  *
+ *  3) Write-tool override (ticket ACP-C3) — overrides the built-in `write`
+ *     tool. The `tool_call` permission gate (1) runs FIRST and unchanged;
+ *     delegation happens only after allow. When ACP_FS_DELEGATION === "1" the
+ *     override asks the ACP client via
+ *     `ctx.ui.input("[acp:write] <toolCallId> <absolutePath>")`; the adapter
+ *     bridges it to `fs/write_text_file` (content comes from the adapter's
+ *     copy of the tool args, never from the dialog). A response value of
+ *     exactly "ok" is a delegated write: the override returns a synthetic
+ *     success result WITHOUT writing locally. Any other value (cancelled /
+ *     null / ...) falls back to the original local write. When
+ *     ACP_FS_DELEGATION is not "1", it writes locally from the start.
+ *
  * Env vars are read at load time (set by the adapter at pi spawn):
  *   ACP_GATED_TOOLS    comma-joined tool names, default "bash,write,edit"
- *   ACP_FS_DELEGATION  "1" (delegate read to the ACP client) or "0" (local)
+ *   ACP_FS_DELEGATION  "1" (delegate read/write to the ACP client) or "0" (local)
  */
-import { constants, access, readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { constants, access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const gated = new Set(
   (process.env.ACP_GATED_TOOLS ?? "bash,write,edit").split(",").filter(Boolean),
 );
-const delegateRead = process.env.ACP_FS_DELEGATION === "1";
+const delegateFs = process.env.ACP_FS_DELEGATION === "1";
 
 // Title prefixes shared with the adapter (src/permissions.ts,
 // src/fs-delegation.ts): the adapter recognizes and parses these.
 const PERM_PREFIX = "[acp:perm] ";
 const READ_PREFIX = "[acp:read] ";
+const WRITE_PREFIX = "[acp:write] ";
 
 // Plain JSON schema for the read tool (matches pi's built-in read
 // parameters: path, optional offset (1-indexed), optional limit).
@@ -68,6 +81,24 @@ const readSchema = {
     },
   },
   required: ["path"],
+  additionalProperties: false,
+};
+
+// Plain JSON schema for the write tool (matches pi's built-in write
+// parameters: path, content).
+const writeSchema = {
+  type: "object",
+  properties: {
+    path: {
+      type: "string",
+      description: "Path to the file to write (relative or absolute)",
+    },
+    content: {
+      type: "string",
+      description: "Content to write to the file",
+    },
+  },
+  required: ["path", "content"],
   additionalProperties: false,
 };
 
@@ -93,7 +124,7 @@ export default function (pi: ExtensionAPI) {
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const absolutePath = resolve(ctx.cwd, params.path);
       let content;
-      if (delegateRead) {
+      if (delegateFs) {
         // Ask the ACP client (Xcode) to read the file on its side.
         content = await ctx.ui.input(`${READ_PREFIX}${absolutePath}`);
         if (content === undefined) {
@@ -123,6 +154,53 @@ export default function (pi: ExtensionAPI) {
         content: [{ type: "text", text: selected }],
         details: { lines: lines.length },
       };
+    },
+    // No renderCall/renderResult — the built-in renderer is used.
+  });
+
+  // 3) Override built-in write tool for ACP fs delegation (ticket ACP-C3).
+  pi.registerTool({
+    name: "write", // same name as built-in -> overrides it
+    label: "write",
+    description:
+      "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
+    parameters: writeSchema,
+    async execute(toolCallId, params, _signal, _onUpdate, ctx) {
+      const absolutePath = resolve(ctx.cwd, params.path);
+      const content = params.content;
+      if (delegateFs) {
+        // Ask the ACP client (Xcode) to write the file on its side. The
+        // content travels via the adapter (stored from tool args), NOT via
+        // this dialog — only the path + toolCallId identify the write.
+        // The `tool_call` permission gate above already ran and allowed.
+        const value = await ctx.ui.input(`${WRITE_PREFIX}${toolCallId} ${absolutePath}`);
+        if (value === "ok") {
+          // Delegated write succeeded on the client: return a synthetic
+          // success result WITHOUT writing locally.
+          return {
+            content: [
+              { type: "text", text: `Wrote ${content.length} chars to ${absolutePath} via client` },
+            ],
+            details: { chars: content.length },
+          };
+        }
+        // cancelled / null / anything else: fall through to the local write.
+      }
+      // Fallback: local write to the container filesystem (also the
+      // path taken when ACP_FS_DELEGATION is not "1").
+      try {
+        await mkdir(dirname(absolutePath), { recursive: true });
+        await writeFile(absolutePath, content, "utf-8");
+        return {
+          content: [{ type: "text", text: `Wrote ${content.length} chars to ${absolutePath}` }],
+          details: { chars: content.length },
+        };
+      } catch (e) {
+        return {
+          content: [{ type: "text", text: `Error writing file: ${e.message}` }],
+          details: { error: true },
+        };
+      }
     },
     // No renderCall/renderResult — the built-in renderer is used.
   });

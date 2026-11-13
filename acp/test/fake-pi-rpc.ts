@@ -1,4 +1,6 @@
 import { EventEmitter } from "node:events";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import { PassThrough } from "node:stream";
 import type { PiProcessLike } from "../src/pi-rpc.js";
 
@@ -28,6 +30,13 @@ import type { PiProcessLike } from "../src/pi-rpc.js";
  *                      extension_ui_request (input, `[acp:read] <path>`);
  *                      the response value becomes the tool result, a
  *                      cancelled response simulates the local fallback.
+ *   "with-write"     — tool_execution_start (write, {path, content}) then
+ *                      an extension_ui_request (input, `[acp:write] <id>
+ *                      <path>`); value "ok" -> tool_execution_end success
+ *                      (synthetic "via client" result, no local write);
+ *                      cancelled -> tool_execution_end with the local
+ *                      fallback result (the real local write IS performed,
+ *                      use a tmp path).
  *
  * The fake simulates the bundled pi extension's behavior directly (it does
  * NOT load pi-extension.ts); `gatedTools` / `fsDelegation` mirror the
@@ -52,7 +61,8 @@ export type FakePromptBehavior =
   | "text-only"
   | "with-tool"
   | "with-permission"
-  | "with-read";
+  | "with-read"
+  | "with-write";
 
 export interface FakeToolSpec {
   toolCallId?: string;
@@ -121,6 +131,18 @@ export interface FakePiOptions {
   readPath?: string;
   /** Content the simulated local fallback returns ("with-read"). */
   readFallbackText?: string;
+  /** Path the simulated write tool targets ("with-write"). */
+  writePath?: string;
+  /** Content the simulated write tool writes ("with-write"). */
+  writeContent?: string;
+  /**
+   * Path embedded in the `[acp:write]` dialog title ("with-write").
+   * Defaults to writePath; set a different value to simulate a
+   * title/args mismatch.
+   */
+  writeTitlePath?: string;
+  /** Text of the simulated local-fallback tool result ("with-write"). */
+  writeFallbackText?: string;
   /**
    * A3: absolute path of the pi session file reported by `get_state`
    * (default `/tmp/fake/<sessionId>.jsonl`).
@@ -179,6 +201,10 @@ export class FakePi implements PiProcessLike {
   private readonly fsDelegation: boolean;
   private readonly readPath: string;
   private readonly readFallbackText: string;
+  private readonly writePath: string;
+  private readonly writeContent: string;
+  private readonly writeTitlePath: string;
+  private readonly writeFallbackText: string;
   private readonly switchCancelled: boolean;
   private sessionId = "fake-pi-session-1";
   /** A3: absolute path of the session file this instance started with. */
@@ -209,6 +235,12 @@ export class FakePi implements PiProcessLike {
     this.fsDelegation = options.fsDelegation ?? true;
     this.readPath = options.readPath ?? "/tmp/delegated.txt";
     this.readFallbackText = options.readFallbackText ?? "local fallback content";
+    this.writePath = options.writePath ?? "/tmp/delegated-write.txt";
+    this.writeContent = options.writeContent ?? "delegated write content";
+    this.writeTitlePath = options.writeTitlePath ?? options.writePath ?? this.writePath;
+    this.writeFallbackText =
+      options.writeFallbackText ??
+      `Wrote ${this.writeContent.length} chars to ${this.writePath}`;
     this.switchCancelled = options.switchCancelled ?? false;
     this.store = options.messageStore ?? defaultFakePiMessageStore;
     this.sessionFile = options.sessionFile ?? `/tmp/fake/${this.sessionId}.jsonl`;
@@ -459,7 +491,9 @@ export class FakePi implements PiProcessLike {
       // contract) must therefore already see the full history when it
       // responds.
 
-      let middle: Array<Record<string, unknown>> = [];
+      let middle: Array<
+        Record<string, unknown> | (() => Promise<Array<Record<string, unknown>>>)
+      > = [];
       switch (this.behavior) {
         case "text-only":
           middle = [];
@@ -473,13 +507,23 @@ export class FakePi implements PiProcessLike {
         case "with-read":
           middle = await this.readToolEvents();
           break;
+        case "with-write":
+          middle = this.writeToolEvents();
+          break;
       }
 
-      for (const ev of [...head, ...preText, ...textUpdates, ...middle, ...tail]) {
+      for (const item of [...head, ...preText, ...textUpdates, ...middle, ...tail]) {
         if (run.aborted) break; // abort landed: stop the run
-        this.emitLine(ev);
-        // Let the adapter consume each event (keeps ordering observable).
-        await new Promise((r) => setImmediate(r));
+        const events =
+          typeof item === "function"
+            ? await item()
+            : [item as Record<string, unknown>];
+        for (const ev of events) {
+          if (run.aborted) break;
+          this.emitLine(ev);
+          // Let the adapter consume each event (keeps ordering observable).
+          await new Promise((r) => setImmediate(r));
+        }
       }
       if (run.aborted) return; // the abort handler already answered the prompt
 
@@ -528,6 +572,14 @@ export class FakePi implements PiProcessLike {
         name: "read",
         toolName: "read",
         arguments: { path: this.readPath },
+      });
+    } else if (this.behavior === "with-write") {
+      blocks.push({
+        type: "toolCall",
+        id: this.toolSpec.toolCallId ?? "tc-write-1",
+        name: "write",
+        toolName: "write",
+        arguments: { path: this.writePath, content: this.writeContent },
       });
     }
     const text = this.textDeltas.join("");
@@ -651,6 +703,62 @@ export class FakePi implements PiProcessLike {
         isError: false,
       },
     ];
+  }
+
+  /**
+   * "with-write" (C3): the simulated write-tool override requests the write
+   * on the adapter via extension_ui_request (input, `[acp:write] <id> <path>`).
+   * The tool_execution_start is emitted FIRST (the adapter stores the write
+   * args from it), then the dialog: value "ok" -> synthetic success result
+   * (no local write); cancelled -> the REAL local fallback write is
+   * performed at writePath (use a tmp path in tests) and its result is
+   * reported.
+   */
+  private writeToolEvents(): Array<
+    Record<string, unknown> | (() => Promise<Array<Record<string, unknown>>>)
+  > {
+    const toolCallId = this.toolSpec.toolCallId ?? "tc-write-1";
+    const start: Record<string, unknown> = {
+      type: "tool_execution_start",
+      toolCallId,
+      toolName: "write",
+      args: { path: this.writePath, content: this.writeContent },
+    };
+    const end = (text: string): Record<string, unknown> => ({
+      type: "tool_execution_end",
+      toolCallId,
+      toolName: "write",
+      result: { content: [{ type: "text", text }] },
+      isError: false,
+    });
+    const afterStart = async (): Promise<Array<Record<string, unknown>>> => {
+      if (!this.fsDelegation) {
+        // Delegation disabled: the extension writes locally from the start.
+        await this.localWrite();
+        return [end(this.writeFallbackText)];
+      }
+      const resp = await this.extensionUiRequest({
+        method: "input",
+        title: `[acp:write] ${toolCallId} ${this.writeTitlePath}`,
+        placeholder: "",
+      });
+      if (resp.value === "ok") {
+        // Delegated write succeeded on the client: synthetic success result.
+        return [
+          end(`Wrote ${this.writeContent.length} chars to ${this.writePath} via client`),
+        ];
+      }
+      // Cancelled: simulated local fallback (the real write IS performed).
+      await this.localWrite();
+      return [end(this.writeFallbackText)];
+    };
+    return [start, afterStart];
+  }
+
+  /** Perform the simulated local fallback write (parent dirs included). */
+  private async localWrite(): Promise<void> {
+    await mkdir(dirname(this.writePath), { recursive: true });
+    await writeFile(this.writePath, this.writeContent, "utf-8");
   }
 
   /**
