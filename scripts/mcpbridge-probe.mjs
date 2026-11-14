@@ -14,6 +14,7 @@
  *
  * Usage (on the Mac, project open in Xcode, Intelligence setting enabled):
  *   node mcpbridge-probe.mjs                      # handshake + tool list
+ *   node mcpbridge-probe.mjs --tools-only         # handshake + tool NAMES only
  *   node mcpbridge-probe.mjs --call DocumentationSearch '{"query":"SwiftUI List"}'
  *   node mcpbridge-probe.mjs --cmd "xcrun mcpbridge" --extra-env MCP_XCODE_PID=1234
  *
@@ -28,6 +29,7 @@ let cmd = "xcrun";
 let argv = ["mcpbridge"];
 let callName = null;
 let callArgsJson = null;
+let toolsOnly = false;
 let extraEnv = {};
 
 // --cmd accepts a full command line: "xcrun mcpbridge",
@@ -40,6 +42,7 @@ function setCmd(value) {
 
 for (let i = 0; i < args.length; i++) {
   if (args[i] === "--cmd") { setCmd(args[++i]); }
+  else if (args[i] === "--tools-only") { toolsOnly = true; }
   else if (args[i] === "--call") { callName = args[++i]; callArgsJson = args[++i] ?? "{}"; }
   else if (args[i] === "--extra-env") {
     const kv = args[++i];
@@ -92,6 +95,13 @@ child.stdout.on("data", (d) => {
       send({ jsonrpc: "2.0", method: "notifications/initialized" });
       send({ jsonrpc: "2.0", id: ID.list, method: "tools/list", params: {} });
     } else if (frame.id === ID.list && (frame.result || frame.error)) {
+      if (frame.error) { log("!! tools/list rejected", frame.error); finish(2); }
+      if (toolsOnly) {
+        const tools = frame.result.tools ?? [];
+        console.log(`\n[tools] ${tools.length} tools:`);
+        for (const t of tools) console.log(`  ${t.name}${t.title ? `  (${t.title})` : ""}`);
+        finish(0);
+      }
       gotList = true;
       if (callName) {
         send({ jsonrpc: "2.0", id: ID.call, method: "tools/call", params: { name: callName, arguments: JSON.parse(callArgsJson) } });
