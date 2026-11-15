@@ -5,6 +5,16 @@ modeled on the upstream "Plain Docker" pattern and the `mark/pi-sandbox` referen
 with **`PI_UID`/`PI_GID` build args** so the in-container user matches the external
 Unraid user.
 
+Three ways to drive pi:
+
+- **Interactive** — `docker compose run` one-shots and shells.
+- **MCP task queue** (`mcp` mode) — Hermes (or any MCP client) delegates
+  coding tasks to a persistent bridge.
+- **ACP server** (`acp` mode) — **Xcode 27** (or any ACP client) drives pi
+  remotely, including file operations executed on the Mac.
+- **MCP relay** (reverse direction) — agents on Unraid invoke Xcode's MCP
+  tools (builds, tests, devices, docs) that live on the Mac.
+
 All `models.json` fields (except `cost`) are parameterizable via environment
 variables — override at build time (`--build-arg`) or runtime (`-e` / compose
 `environment:`) without rebuilding.
@@ -13,12 +23,16 @@ variables — override at build time (`--build-arg`) or runtime (`-e` / compose
 
 | File | Purpose |
 |------|---------|
-| `Dockerfile` | ubuntu:24.04, non-root user (matching UID/GID), Node 26, Python 3 (+pip, venv), OpenJDK 25 + Gradle, global `pi` install, bundled MCP bridge (`mcp/`) |
-| `config/entrypoint.sh` | Startup script: generates `models.json` from env vars, then `exec pi "$@"` — or the MCP bridge daemon in `mcp` mode |
+| `Dockerfile` | ubuntu:24.04, non-root user (matching UID/GID), Node 26, Python 3 (+pip, venv), OpenJDK 25 + Gradle, global `pi` install, bundled MCP bridge (`mcp/`), ACP adapter (`acp/`), MCP relay consumer shim (`mcp-relay/`) |
+| `config/entrypoint.sh` | Startup script: generates `models.json` from env vars, then `exec pi "$@"` — or the MCP bridge daemon in `mcp` mode / the ACP server in `acp` mode; registers the `xcode` MCP server when relay env is set |
 | `config/models.json` | Reference example of the generated `models.json` (not loaded directly) |
 | `mcp/server.js` | MCP bridge (HTTP/StreamableHTTP, Node + `@modelcontextprotocol/sdk`): exposes pi as a serial task queue to MCP clients (Hermes) |
 | `mcp/package.json` | Bridge dependencies (SDK + zod); `package-lock.json` pinned for `npm ci` |
-| `docker-compose.yml` | Standalone services: `pi-sandbox` (interactive) + `pi-sandbox-mcp` (daemon), joins `traefik` network |
+| `acp/` | ACP adapter package (stdio + WS transports): tool mapping, permission prompts, fs read/write delegation, session load/resume — see `acp/README.md` |
+| `proxy/` | Mac-side ACP proxy: stdio↔WS bridge between Xcode and the ACP server — see `proxy/README.md` |
+| `mcp-relay/` | Mac-side MCP relay daemon (launchd) + Unraid stdio shim: lets agents on Unraid use Xcode's MCP tools — see `mcp-relay/README.md` |
+| `scripts/mcpbridge-probe.mjs` | MCP wire research probe for `xcrun mcpbridge` (handshake, tool list, read-only call) |
+| `docker-compose.yml` | Standalone services: `pi-sandbox` (interactive) + `pi-sandbox-mcp` (daemon) + `pi-sandbox-acp` (ACP daemon), joins `traefik` network |
 | `docker-compose.snippet.yml` | Block to merge into a shared stack |
 | `.env.example` | All env vars with defaults |
 
@@ -51,6 +65,10 @@ docker compose run --rm pi-sandbox \
 
 # Continue last session
 docker compose run --rm pi-sandbox -c -p "Continue where we left off"
+
+# Persistent daemons
+docker compose up -d pi-sandbox-mcp   # MCP task queue (needs PI_MCP_API_KEY)
+docker compose up -d pi-sandbox-acp   # ACP server (needs PI_ACP_API_KEY)
 ```
 
 ## Environment variables
@@ -94,6 +112,25 @@ Override at build time (`--build-arg`) or runtime (`-e` / compose `environment:`
 | `PI_OFFLINE` | `1` | Disable startup network ops |
 | `PI_SKIP_VERSION_CHECK` | `1` | Skip pi.dev version check |
 | `PI_TELEMETRY` | `0` | Disable telemetry |
+
+### ACP mode env vars (`pi-sandbox-acp` service)
+
+| Var | Default | Purpose |
+|-----|---------|---------|
+| `PI_ACP_API_KEY` | *(no default — REQUIRED)* | Bearer key for the WS endpoint; the server refuses to start without it |
+| `PI_ACP_PORT` | `3123` | WS listen port (container-only; never published) |
+| `PI_ACP_HOST` | `0.0.0.0` | Bind address — all container interfaces so Traefik can reach it (safe: no host port publish) |
+| `PI_ACP_DOMAIN` | `pi.example.lan` (placeholder) | Traefik `Host()` rule — a name under your own domain (DNS record + auto-issued cert) |
+| `PI_ACP_ENTRYPOINTS` | `https` | Traefik entrypoint |
+| `PI_ACP_CERTRESOLVER` | `production` | Let's Encrypt certresolver |
+| `PI_ACP_MIDDLEWARES` | `secured@file` | LAN IP whitelist + security headers — keeps the endpoint LAN-only despite the public domain |
+
+### MCP relay env vars (any pi-sandbox service)
+
+| Var | Default | Purpose |
+|-----|---------|---------|
+| `MCP_RELAY_URL` | `ws://MAC_IP:3129` (placeholder) | Mac relay address (the Mac's VLAN IP). When set to a real value together with the key, the entrypoint registers the `xcode` MCP server for in-container pi |
+| `MCP_RELAY_KEY` | *(placeholder)* | Bearer key for the relay — printed once by `mcp-relay/install.sh` on the Mac |
 
 ## How UID/GID works
 
@@ -167,6 +204,102 @@ Behavior notes:
       timeout: 3600
   ```
   Tools register as `mcp_pi_sandbox_pi_task_submit`, etc.
+
+## ACP mode (Xcode 27 → Pi)
+
+The image bundles an [Agent Client Protocol (ACP)](https://agentclientprotocol.com)
+adapter (`acp/`) so **Xcode 27's coding assistant** — or any ACP client — can
+drive pi remotely. Xcode spawns the registered agent over stdio; a small
+Mac-side proxy (`proxy/`) forwards every record over a WebSocket to the
+`acp serve` endpoint in the `pi-sandbox-acp` container.
+
+```
+Xcode (ACP client, on the Mac)
+  |  stdio NDJSON
+  v
+acp-proxy (~/acp-proxy, launched by Xcode)
+  |  WSS, Authorization: Bearer <PI_ACP_API_KEY>
+  v
+acp serve (pi-sandbox-acp container, via the host's Traefik — LAN-only)
+  |  JSONL stdio
+  v
+pi --mode rpc  ->  LLM
+```
+
+Features:
+
+- **Streaming** — text and thinking chunks stream back as ACP
+  `session/update` notifications; Xcode renders them live.
+- **Tool calls + permissions** — pi's tool use is rendered as ACP tool
+  calls; gated tools (`bash`, `write`, `edit`) require a permission prompt
+  (allow once / reject) from Xcode.
+- **File operations on the Mac** — when the client advertises the fs
+  capability (Xcode does), `read`/`write` go through ACP
+  `fs/read_text_file` / `fs/write_text_file`: Xcode executes them on the Mac
+  side, with a permission prompt per write (content never travels in the
+  dialog).
+- **Sessions** — `session/load` + `session/resume` (session map under
+  `~/.acp-pi/sessions.json`); thinking level is a runtime config option.
+
+Conformance: the protocol layer is verified **CONFORMANT** by the official
+ACP Test Compatibility Kit on both transports (stdio and WS) — see
+`acp/README.md` for the full record.
+
+### Setup
+
+1. **Unraid** — set the ACP vars in `.env` (see env tables above) and start
+   the daemon:
+   ```bash
+   docker compose up -d pi-sandbox-acp
+   ```
+   No host port is published. Traefik exposes `$PI_ACP_DOMAIN` on the LAN
+   behind the `secured` middleware (LAN IP whitelist + security headers),
+   and the WS endpoint additionally requires the bearer key.
+2. **Mac** — install the proxy:
+   ```bash
+   git pull && cd proxy && bash install.sh
+   ```
+   then set `wsUrl` (`wss://<PI_ACP_DOMAIN>`) and `apiKey`
+   (`PI_ACP_API_KEY`) in `~/Library/Application Support/acp-proxy/config.json`.
+3. **Xcode** — Settings → Intelligence → Agents → **Add an Agent**: name
+   `Pi`, command `node`, args = the proxy path printed by `install.sh`.
+   Open a coding assistant conversation (⌘0) and prompt as usual.
+
+Debug: set `"debug": true` in the proxy config to log every ACP frame to
+`~/Library/Logs/acp-proxy.log`.
+
+## MCP relay (Pi/Hermes → Xcode tools)
+
+The reverse direction: agents **on Unraid** invoke **Xcode's MCP tools** —
+53 tools covering builds, tests, run destinations, device interaction,
+crash logs, localization, project file ops, and documentation search — that
+live on the Mac.
+
+Xcode exposes those tools only through `xcrun mcpbridge`, a stdio MCP server
+that auto-detects the running Xcode (no env vars required). `mcp-relay/`
+ships two pieces:
+
+- **`relay.mjs`** (Mac daemon under launchd): one WS listener that spawns
+  `xcrun mcpbridge` per connection and pipes stdio 1:1. Bearer key required
+  on every connection; binds to `127.0.0.1` unless `install.sh --bind <ip>`
+  says otherwise; no public exposure.
+- **`remote-stdio.mjs`** (in the image at `/opt/mcp-relay/`): the consumer
+  shim — a stdio MCP server that pipes to the relay over WS.
+
+When `MCP_RELAY_URL` + `MCP_RELAY_KEY` are set to real values, the entrypoint
+registers an **`xcode`** MCP server for in-container pi (stdio → shim →
+relay → mcpbridge → Xcode). The same shim works directly as an Hermes
+`mcp_servers` entry.
+
+Requirements: Xcode running with the project open, and Xcode → Settings →
+Intelligence → Model Context Protocol → "Allow External Agents to Use Xcode
+Tools" set to Always or While Xcode is Open. With Xcode closed, the bridge
+fails cleanly and the error is visible to the consumer (retry after opening
+Xcode).
+
+Install: `git pull && cd mcp-relay && ./install.sh --bind <mac-static-ip>`
+on the Mac — prints the key once plus a ready-to-paste consumer snippet.
+Details and the security model: `mcp-relay/README.md`.
 
 ## Example: use in a shared compose stack
 
