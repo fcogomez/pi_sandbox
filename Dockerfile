@@ -195,6 +195,16 @@ COPY --chown=${PI_UID}:${PI_GID} acp/ /opt/acp/
 RUN cd /opt/acp && npm ci --ignore-scripts && npm run build
 
 # ---------------------------------------------------------------------------
+# MCP relay consumer shim (mcp-relay, ticket M1.2)
+#   remote-stdio.mjs: stdio MCP <-> WS bridge to the Mac-side mcp-relay
+#   daemon (which pipes to `xcrun mcpbridge` / Xcode). The shim is registered
+#   as the pi "xcode" MCP server by config/entrypoint.sh when MCP_RELAY_URL
+#   + MCP_RELAY_KEY are set to real values.
+# ---------------------------------------------------------------------------
+COPY --chown=${PI_UID}:${PI_GID} mcp-relay/ /opt/mcp-relay/
+RUN cd /opt/mcp-relay && npm ci --omit=dev --ignore-scripts
+
+# ---------------------------------------------------------------------------
 # Runtime environment variables
 #   - PI_CODING_AGENT_DIR: where pi stores config, sessions, models.json
 #   - WORKSPACE_DIR: default working dir for tasks
@@ -236,6 +246,14 @@ ENV PI_CODING_AGENT=true
 ENV HINDSIGHT_API_URL=http://your-hindsight-host:8888
 ENV HINDSIGHT_API_KEY=***
 ENV HINDSIGHT_BANK_ID=agents
+
+# Xcode MCP relay (mcp-relay, ticket M1.2) — placeholders only; override at
+# runtime (compose / .env). The entrypoint registers the "xcode" MCP server
+# for in-image pi only when both are set to real (non-placeholder) values.
+# MCP_RELAY_KEY must equal the key in the Mac's mcp-relay config.json
+# (printed once by mcp-relay/install.sh).
+ENV MCP_RELAY_URL=ws://MAC_IP:3129
+ENV MCP_RELAY_KEY=CHANGE_ME_RELAY_KEY
 
 # ---------------------------------------------------------------------------
 # Entrypoint script — generates models.json then execs pi

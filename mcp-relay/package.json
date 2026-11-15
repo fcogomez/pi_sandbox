@@ -1,0 +1,17 @@
+{
+  "name": "mcp-relay",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Mac-side mcpbridge relay (launchd, stdio<->WS, bearer auth) + Unraid consumer shim (ticket M1.2)",
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "ws": "^8.22.1"
+  },
+  "license": "MIT"
+}

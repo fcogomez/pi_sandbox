@@ -115,6 +115,35 @@ Never write secrets into memory. If hindsight errors (server down, auth), contin
 EOF
 ARGS+=("--append-system-prompt" "$(cat /tmp/.pi-mem-prompt)")
 
+# --- xcode MCP relay (mcp-relay, ticket M1.2) ---------------------------
+# Registers the "xcode" MCP server (in-image pi) pointing at the consumer
+# shim /opt/mcp-relay/remote-stdio.mjs, which speaks WS (bearer) to the
+# Mac-side relay. Only when real (non-placeholder) values are configured.
+# Upserts mcpServers.xcode in ${PI_CODING_AGENT_DIR}/mcp.json (pi 1.5.2
+# user-level MCP config), preserving any other entries the user added.
+MCP_RELAY_URL="${MCP_RELAY_URL:-}"
+MCP_RELAY_KEY="${MCP_RELAY_KEY:-}"
+if [ -n "$MCP_RELAY_URL" ] && [ -n "$MCP_RELAY_KEY" ] \
+   && [ "$MCP_RELAY_URL" != "ws://MAC_IP:3129" ] && [ "$MCP_RELAY_KEY" != "CHANGE_ME_RELAY_KEY" ]; then
+  node -e '
+    const fs = require("fs");
+    const p = process.argv[1];
+    let cfg = { mcpServers: {} };
+    try { cfg = JSON.parse(fs.readFileSync(p, "utf8")); } catch {}
+    if (!cfg.mcpServers || typeof cfg.mcpServers !== "object") cfg.mcpServers = {};
+    cfg.mcpServers.xcode = {
+      command: "node",
+      args: ["/opt/mcp-relay/remote-stdio.mjs"],
+      env: { MCP_RELAY_URL: process.env.MCP_RELAY_URL, MCP_RELAY_KEY: process.env.MCP_RELAY_KEY },
+      description: "Xcode tooling relayed from the Mac (DocumentationSearch, project state, builds)."
+    };
+    fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + "\n");
+  ' "${PI_CODING_AGENT_DIR}/mcp.json"
+  echo "[pi-sandbox] Registered xcode MCP server (relay: ${MCP_RELAY_URL})"
+else
+  echo "[pi-sandbox] xcode MCP relay not configured (set MCP_RELAY_URL + MCP_RELAY_KEY to real values to enable)"
+fi
+
 # --- mcp mode: run the MCP bridge daemon instead of exec'ing pi ------------
 # models.json and the memory prompt file are already in place; the bridge
 # reads both (and appends the memory prompt itself to each pi task).
