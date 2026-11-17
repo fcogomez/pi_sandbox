@@ -72,7 +72,7 @@ log: `~/Library/Logs/mcp-relay.console.log`.
 ### (a) Hermes CLI — `mcp_servers` entry
 
 ```toml
-[mcp_servers.xcode]
+[mcp_servers.xcode-tools]
 command = "node"
 args = ["/path/to/pi-sandbox/mcp-relay/remote-stdio.mjs"]
 env = { MCP_RELAY_URL = "ws://<mac-host>:3129", MCP_RELAY_KEY = "<key from Mac config.json>" }
@@ -87,14 +87,15 @@ pi 1.5.2 registers MCP servers in `mcp.json` (user-level:
 Supported transports: **stdio** (`command`/`args`/`env`) and **streamable HTTP**
 (`url`/`headers`) — no SSE, no native WS transport, hence the stdio shim.
 
-The image's entrypoint (`config/entrypoint.sh`) upserts the `xcode` entry into
+The image's entrypoint (`config/entrypoint.sh`) upserts the `xcode-tools`
+entry into
 `${PI_CODING_AGENT_DIR}/mcp.json` on startup **when** `MCP_RELAY_URL` and
 `MCP_RELAY_KEY` are set to real (non-placeholder) values:
 
 ```json
 {
   "mcpServers": {
-    "xcode": {
+    "xcode-tools": {
       "command": "node",
       "args": ["/opt/mcp-relay/remote-stdio.mjs"],
       "env": {
@@ -107,7 +108,7 @@ The image's entrypoint (`config/entrypoint.sh`) upserts the `xcode` entry into
 }
 ```
 
-Equivalent manual setup inside a session host: `pi mcp add xcode --env
+Equivalent manual setup inside a session host: `pi mcp add xcode-tools --env
 MCP_RELAY_URL='${MCP_RELAY_URL}' --env MCP_RELAY_KEY='${MCP_RELAY_KEY}' --
 node /opt/mcp-relay/remote-stdio.mjs`, then `/reload`.
 

@@ -24,7 +24,7 @@ variables — override at build time (`--build-arg`) or runtime (`-e` / compose
 | File | Purpose |
 |------|---------|
 | `Dockerfile` | ubuntu:24.04, non-root user (matching UID/GID), Node 26, Python 3 (+pip, venv), OpenJDK 25 + Gradle, global `pi` install, bundled MCP bridge (`mcp/`), ACP adapter (`acp/`), MCP relay consumer shim (`mcp-relay/`) |
-| `config/entrypoint.sh` | Startup script: generates `models.json` from env vars, then `exec pi "$@"` — or the MCP bridge daemon in `mcp` mode / the ACP server in `acp` mode; registers the `xcode` MCP server when relay env is set |
+| `config/entrypoint.sh` | Startup script: generates `models.json` from env vars, then `exec pi "$@"` — or the MCP bridge daemon in `mcp` mode / the ACP server in `acp` mode; registers the `xcode-tools` MCP server when relay env is set |
 | `config/models.json` | Reference example of the generated `models.json` (not loaded directly) |
 | `mcp/server.js` | MCP bridge (HTTP/StreamableHTTP, Node + `@modelcontextprotocol/sdk`): exposes pi as a serial task queue to MCP clients (Hermes) |
 | `mcp/package.json` | Bridge dependencies (SDK + zod); `package-lock.json` pinned for `npm ci` |
@@ -129,7 +129,7 @@ Override at build time (`--build-arg`) or runtime (`-e` / compose `environment:`
 
 | Var | Default | Purpose |
 |-----|---------|---------|
-| `MCP_RELAY_URL` | `ws://MAC_IP:3129` (placeholder) | Mac relay address (the Mac's VLAN IP). When set to a real value together with the key, the entrypoint registers the `xcode` MCP server for in-container pi |
+| `MCP_RELAY_URL` | `ws://MAC_IP:3129` (placeholder) | Mac relay address (the Mac's VLAN IP). When set to a real value together with the key, the entrypoint registers the `xcode-tools` MCP server for in-container pi |
 | `MCP_RELAY_KEY` | *(placeholder)* | Bearer key for the relay — printed once by `mcp-relay/install.sh` on the Mac |
 
 ## How UID/GID works
@@ -287,9 +287,12 @@ ships two pieces:
   shim — a stdio MCP server that pipes to the relay over WS.
 
 When `MCP_RELAY_URL` + `MCP_RELAY_KEY` are set to real values, the entrypoint
-registers an **`xcode`** MCP server for in-container pi (stdio → shim →
+registers an **`xcode-tools`** MCP server for in-container pi (stdio → shim →
 relay → mcpbridge → Xcode). The same shim works directly as an Hermes
-`mcp_servers` entry.
+`mcp_servers` entry. In ACP (Xcode-driven) sessions the mutating Xcode tools
+are permission-gated — Xcode shows a prompt before each runs — while the
+read-only tools (documentation search, logs, project state, …) run without a
+prompt.
 
 Requirements: Xcode running with the project open, and Xcode → Settings →
 Intelligence → Model Context Protocol → "Allow External Agents to Use Xcode

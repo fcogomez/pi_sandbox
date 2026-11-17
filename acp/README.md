@@ -50,8 +50,8 @@ B2 (conformance) added:
 Tool mapping, permissions, and read delegation. Each session's pi is spawned
 with the bundled standalone extension (`-e acp/pi-extension.ts`; the adapter
 computes its absolute path relative to the package root and sets
-`ACP_FS_DELEGATION` ("1"/"0") and `ACP_GATED_TOOLS` (comma-joined)
-env vars on the child):
+`ACP_FS_DELEGATION` ("1"/"0"), `ACP_GATED_TOOLS` (comma-joined) and
+`ACP_UNGATED_TOOLS` (comma-joined; `""` = none) env vars on the child):
 
 - **Tool mapping** (`src/tool-mapping.ts`): pi `tool_execution_start` /
   `tool_execution_update` / `tool_execution_end` events map to ACP
@@ -60,9 +60,19 @@ env vars on the child):
   `write`/`edit`→`edit`, `bash`→`execute`, `grep`/`find`/`ls`→`search`,
   anything else→`other`.
 - **Permissions** (`src/permissions.ts`): the extension gates a configurable
-  set of tools (`AcpConfig.gatedTools`, default `bash,write,edit`; read-only
-  tools are never gated) on pi's `tool_call` event via `ctx.ui.select` with
-  the title convention `[acp:perm] <tool> [id:<toolCallId>] <summary>`. In
+  set of tools (`AcpConfig.gatedTools`, default
+  `bash,write,edit,mcp__xcode_tools__*`) on pi's `tool_call` event via
+  `ctx.ui.select` with the title convention `[acp:perm] <tool> [id:<toolCallId>]
+  <summary>`. Entries may be exact tool names or `prefix*` patterns (a
+  trailing `*` is a prefix match, pure helper `isGatedTool` in
+  `src/config.ts`). `AcpConfig.ungatedTools` (default: the read-only
+  `mcp__xcode_tools__*` Xcode tools — DocumentationSearch, XcodeRead/Grep/
+  Glob/LS, List*, Get* logs/flags/settings, StringCatalog*, RenderPreview)
+  carves names out of any gated pattern: a tool is gated iff it matches a
+  gated pattern AND no ungated pattern. The `mcp__xcode_tools__*` catch-all
+  therefore gates every present-or-future mutating Xcode MCP tool (mutating
+  tools prompt in Xcode; read-only ones do not) while existing non-xcode
+  behavior is unchanged. In
   RPC mode pi emits `extension_ui_request` and blocks; the adapter emits a
   `tool_call` update (status `pending`), calls ACP
   `session/request_permission` with exactly two options
@@ -108,8 +118,10 @@ src/pi-rpc.ts        pi subprocess wrapper: JSONL framing (LF-only split,
                      stream, extension_ui_request/response sub-protocol
 src/thinking.ts      thinking-level control (maps to pi RPC commands)
 src/config.ts        adapter config: thinkingLevel (default "medium"),
-                     gatedTools (default bash,write,edit), fsDelegation
-                     (default true); optional JSON config file
+                     gatedTools (default bash,write,edit,mcp__xcode_tools__*),
+                     ungatedTools (default: read-only mcp__xcode_tools__* Xcode
+                     tools), isGatedTool (pure exact/prefix* gate helper),
+                     fsDelegation (default true); optional JSON config file
                      (ACP_PI_CONFIG or ./acp.config.json)
 src/tool-mapping.ts  pure tool event -> ACP session/update mapping
 src/permissions.ts   request_permission round-trip + title conventions
@@ -120,6 +132,8 @@ test/fake-acp-client.ts  configurable fake ACP client + in-memory harness
 test/acp.test.ts     A1 node --test unit tests against the fakes
 test/tools.test.ts   A2 tool call lifecycle tests
 test/permissions.test.ts  A2 permission granted/denied tests
+test/mcp-gating.test.ts  M2.1 isGatedTool unit tests + MCP tool gating E2E
+                         (gated allow/deny, ungated read-only, child env)
 test/fs.test.ts      A2 read_text_file delegation tests
 test/smoke.test.ts   B2 offline smoke: initialize -> session/new ->
                      session/prompt round trip in BOTH transports (WS via a
@@ -150,7 +164,10 @@ on each transport, with 1 shared documented deviation:
   sees no connection. ADVISORY (a SHOULD), so it does not affect the
   verdict, and the TCK itself lists the MCP/terminal/filesystem
   capability surfaces as "not yet covered". Forwarding `mcpServers` to pi
-  is a deliberate follow-up, not an oversight.
+  is a deliberate follow-up, not an oversight. Mitigated in deployment: the
+  image registers the `xcode-tools` MCP server globally (mcp-relay, ticket
+  M1.2), so Xcode-driven sessions have the Xcode tools without
+  `session/new` forwarding.
 
 ### Re-verified against pi 1.5.0 (2026-11-06)
 

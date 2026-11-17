@@ -32,6 +32,7 @@ import {
   DEFAULT_FS_DELEGATION,
   DEFAULT_GATED_TOOLS,
   DEFAULT_THINKING_LEVEL,
+  DEFAULT_UNGATED_TOOLS,
   type AcpConfig,
   type ThinkingLevel,
 } from "./config.js";
@@ -152,7 +153,10 @@ interface SpawnedSession {
  *
  * A2 scope:
  *   - pi is spawned with the bundled extension (`-e acp/pi-extension.ts`)
- *     plus `ACP_FS_DELEGATION` / `ACP_GATED_TOOLS` env vars
+ *     plus `ACP_FS_DELEGATION` / `ACP_GATED_TOOLS` / `ACP_UNGATED_TOOLS`
+ *     env vars (M2.1: gating entries may be exact names or `prefix*`
+ *     patterns; the default gates `mcp__xcode_tools__*` and carves the
+ *     read-only Xcode tools out via the ungated list)
  *   - tool execution events (tool_execution_start/update/end) are mapped to
  *     ACP `tool_call` / `tool_call_update` session updates (src/tool-mapping.ts)
  *   - the extension's permission select (`[acp:perm] ...`) is bridged to
@@ -229,9 +233,17 @@ export class PiAcpAgent implements Agent {
     return this.sessionMap;
   }
 
-  /** Tools gated on an ACP permission request (config, default bash,write,edit). */
+  /** Tools gated on an ACP permission request (config, default bash,write,edit,mcp__xcode_tools__*). */
   private gatedTools(): string[] {
     return this.config.gatedTools ?? [...DEFAULT_GATED_TOOLS];
+  }
+
+  /**
+   * M2.1: exact-name / `prefix*` patterns exempt from gating (config,
+   * default: the read-only `mcp__xcode_tools__*` Xcode tools).
+   */
+  private ungatedTools(): string[] {
+    return this.config.ungatedTools ?? [...DEFAULT_UNGATED_TOOLS];
   }
 
   /** Whether read is delegated to the ACP client (config, default true). */
@@ -809,6 +821,7 @@ export class PiAcpAgent implements Agent {
       env: {
         ACP_FS_DELEGATION: this.fsDelegation() ? "1" : "0",
         ACP_GATED_TOOLS: this.gatedTools().join(","),
+        ACP_UNGATED_TOOLS: this.ungatedTools().join(","),
       },
     });
     rpc.start();

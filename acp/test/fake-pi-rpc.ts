@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { PassThrough } from "node:stream";
+import { DEFAULT_GATED_TOOLS, DEFAULT_UNGATED_TOOLS, isGatedTool } from "../src/config.js";
 import type { PiProcessLike } from "../src/pi-rpc.js";
 
 /**
@@ -39,8 +40,10 @@ import type { PiProcessLike } from "../src/pi-rpc.js";
  *                      use a tmp path).
  *
  * The fake simulates the bundled pi extension's behavior directly (it does
- * NOT load pi-extension.ts); `gatedTools` / `fsDelegation` mirror the
- * ACP_GATED_TOOLS / ACP_FS_DELEGATION env vars the adapter sets at spawn.
+ * NOT load pi-extension.ts); `gatedTools` / `ungatedTools` mirror the
+ * ACP_GATED_TOOLS / ACP_UNGATED_TOOLS env vars the adapter sets at spawn
+ * (M2.1: exact names or `prefix*` patterns; a tool is gated iff it matches
+ * a gated pattern and no ungated pattern — `isGatedTool` in src/config.ts).
  *
  * A3 additions (session persistence):
  *   - `get_state` reports `sessionFile` (absolute path), `sessionId`,
@@ -123,8 +126,10 @@ export interface FakePiOptions {
   promptBehavior?: FakePromptBehavior;
   /** Tool used by "with-tool" / "with-permission" (default: bash ls -la). */
   tool?: FakeToolSpec;
-  /** Mirrors ACP_GATED_TOOLS (default bash,write,edit). */
+  /** Mirrors ACP_GATED_TOOLS (default: the adapter's production default). */
   gatedTools?: string[];
+  /** Mirrors ACP_UNGATED_TOOLS (default: the adapter's production default). */
+  ungatedTools?: string[];
   /** Mirrors ACP_FS_DELEGATION (default true). */
   fsDelegation?: boolean;
   /** Path the simulated read tool requests ("with-read"). */
@@ -198,6 +203,7 @@ export class FakePi implements PiProcessLike {
   private readonly behavior: FakePromptBehavior;
   private readonly toolSpec: FakeToolSpec;
   private readonly gatedTools: string[];
+  private readonly ungatedTools: string[];
   private readonly fsDelegation: boolean;
   private readonly readPath: string;
   private readonly readFallbackText: string;
@@ -231,7 +237,8 @@ export class FakePi implements PiProcessLike {
     this.usage = options.usage ?? { input: 11, output: 22, thought: 3 };
     this.behavior = options.promptBehavior ?? "text-only";
     this.toolSpec = options.tool ?? {};
-    this.gatedTools = options.gatedTools ?? ["bash", "write", "edit"];
+    this.gatedTools = options.gatedTools ?? [...DEFAULT_GATED_TOOLS];
+    this.ungatedTools = options.ungatedTools ?? [...DEFAULT_UNGATED_TOOLS];
     this.fsDelegation = options.fsDelegation ?? true;
     this.readPath = options.readPath ?? "/tmp/delegated.txt";
     this.readFallbackText = options.readFallbackText ?? "local fallback content";
@@ -635,7 +642,7 @@ export class FakePi implements PiProcessLike {
    */
   private async permissionToolEvents(): Promise<Array<Record<string, unknown>>> {
     const t = this.tool();
-    if (!this.gatedTools.includes(t.toolName)) {
+    if (!isGatedTool(t.toolName, this.gatedTools, this.ungatedTools)) {
       return this.toolEvents();
     }
     const title = `[acp:perm] ${t.toolName} [id:${t.toolCallId}] ${JSON.stringify(t.args).slice(0, 80)}`;

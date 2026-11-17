@@ -14,8 +14,9 @@
  *
  *  1) Permission gate — on pi's `tool_call` event (fires before tool
  *     execution, can block via `{ block: true, reason }`), gated tools
- *     (env ACP_GATED_TOOLS, default "bash,write,edit") ask the user via
- *     `ctx.ui.select`. In RPC mode pi emits an `extension_ui_request`
+ *     (env ACP_GATED_TOOLS, default "bash,write,edit,mcp__xcode_tools__*";
+ *     env ACP_UNGATED_TOOLS carves the read-only Xcode tools out) ask the
+ *     user via `ctx.ui.select`. In RPC mode pi emits an `extension_ui_request`
  *     (method "select") on stdout and blocks; the ACP adapter bridges it
  *     to `session/request_permission` and writes the selected option
  *     ("allow_once" | "reject_once") back. A reject (or cancelled/undefined
@@ -44,16 +45,28 @@
  *     ACP_FS_DELEGATION is not "1", it writes locally from the start.
  *
  * Env vars are read at load time (set by the adapter at pi spawn):
- *   ACP_GATED_TOOLS    comma-joined tool names, default "bash,write,edit"
+ *   ACP_GATED_TOOLS    comma-joined exact names / `prefix*` patterns,
+ *                      default "bash,write,edit,mcp__xcode_tools__*"
+ *   ACP_UNGATED_TOOLS  comma-joined exact names / `prefix*` patterns exempt
+ *                      from gating, default = the read-only Xcode tools
+ *                      ("" = none)
  *   ACP_FS_DELEGATION  "1" (delegate read/write to the ACP client) or "0" (local)
  */
 import { constants, access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+  DEFAULT_GATED_TOOLS,
+  DEFAULT_UNGATED_TOOLS,
+  isGatedTool,
+} from "./src/config.js";
 
-const gated = new Set(
-  (process.env.ACP_GATED_TOOLS ?? "bash,write,edit").split(",").filter(Boolean),
-);
+const gatedTools = (process.env.ACP_GATED_TOOLS ?? DEFAULT_GATED_TOOLS.join(","))
+  .split(",")
+  .filter(Boolean);
+const ungatedTools = (process.env.ACP_UNGATED_TOOLS ?? DEFAULT_UNGATED_TOOLS.join(","))
+  .split(",")
+  .filter(Boolean);
 const delegateFs = process.env.ACP_FS_DELEGATION === "1";
 
 // Title prefixes shared with the adapter (src/permissions.ts,
@@ -104,8 +117,10 @@ const writeSchema = {
 
 export default function (pi: ExtensionAPI) {
   // 1) Permission gate: fires before execution of gated tools; can block.
+  // M2.1: exact names or `prefix*` patterns; a tool is gated iff it matches
+  // a gated pattern AND no ungated pattern (read-only Xcode tools exempt).
   pi.on("tool_call", async (event, ctx) => {
-    if (!gated.has(event.toolName)) return;
+    if (!isGatedTool(event.toolName, gatedTools, ungatedTools)) return;
     const summary = JSON.stringify(event.input ?? {}).slice(0, 80);
     const title = `${PERM_PREFIX}${event.toolName} [id:${event.toolCallId}] ${summary}`;
     const choice = await ctx.ui.select(title, ["allow_once", "reject_once"]);

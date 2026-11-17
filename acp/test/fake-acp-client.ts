@@ -124,6 +124,15 @@ export interface AcpHarnessOptions {
   config?: AcpConfig;
   fake?: FakePi;
   initParams?: InitializeRequest;
+  /**
+   * M2.1: custom spawner seam (default: always return `fake`). Lets tests
+   * capture the args/env the adapter hands to the (fake) pi child.
+   */
+  spawner?: (
+    command: string,
+    args: string[],
+    options: { cwd?: string; env?: NodeJS.ProcessEnv },
+  ) => FakePi;
 }
 
 export interface AcpHarness {
@@ -143,7 +152,7 @@ export function makeAcpHarness(options: AcpHarnessOptions = {}): AcpHarness {
   const client = options.client ?? new FakeAcpClient();
   const agent = new PiAcpAgent({
     config: options.config ?? { thinkingLevel: "medium" },
-    spawner: () => fake, // seam: the adapter spawns the FAKE pi, never a real one
+    spawner: options.spawner ?? (() => fake), // seam: the adapter spawns the FAKE pi, never a real one
     log: () => {},
   });
 
