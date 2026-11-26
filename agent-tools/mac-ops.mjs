@@ -45,7 +45,7 @@ import {
   realpathSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, isDirectory, join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import process from "node:process";
 
 const SERVER_NAME = "mac-ops";
@@ -192,7 +192,7 @@ function validateRepo(args) {
   } catch {
     return { error: `repo path does not exist: ${path}` };
   }
-  if (!isDirectory(real)) {
+  if (!lstatSync(real).isDirectory()) {
     return { error: `repo path is not a directory: ${path}` };
   }
   if (!existsSync(join(real, ".git"))) {
@@ -247,7 +247,7 @@ function toolGitLog(args) {
       return textResult({ error: "count must be an integer 1..100" }, true);
     }
   }
-  return runGit(args, ["log", "--oneline", String(n)]);
+  return runGit(args, ["log", "--oneline", `--max-count=${n}`]);
 }
 
 function toolGitDiff(args) {
