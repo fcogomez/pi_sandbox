@@ -43,12 +43,21 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# Bind for the mac-ops instance: explicit --bind wins; otherwise inherit the
+# existing Xcode instance's bind (keeps VLAN exposure symmetric); else the
+# default loopback.
+MACOPS_BIND="$BIND"
+if [ "$BIND_SET" != "1" ] && [ -f "$CONFIG_PATH" ]; then
+  MAIN_BIND="$(node -e 'const fs=require("fs");try{process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).bind||"")}catch{process.stdout.write("")}' "$CONFIG_PATH" 2>/dev/null)"
+  if [ -n "$MAIN_BIND" ]; then MACOPS_BIND="$MAIN_BIND"; fi
+fi
+
 echo "== mcp-relay install =="
 echo "source : $SRC_DIR"
 echo "target : $DEST_DIR"
 echo "config : $CONFIG_PATH"
 echo "port   : $PORT (xcode) / $MACOPS_PORT (mac-ops)"
-echo "bind   : $BIND"
+echo "bind   : $BIND (xcode) / $MACOPS_BIND (mac-ops)"
 
 # 0. Guard: the mac-ops bridge command is passed as whitespace-split argv;
 #    a DEST_DIR containing spaces would break it.
@@ -121,16 +130,32 @@ if [ ! -f "$CONFIG_MACOPS_PATH" ]; then
   cat > "$CONFIG_MACOPS_PATH" <<EOF
 {
   "port": $MACOPS_PORT,
-  "bind": "$BIND",
+  "bind": "$MACOPS_BIND",
   "key": "$NEW_KEY_MACOPS",
   "debug": false
 }
 EOF
   MACOPS_KEY_CREATED=1
-  echo "config : created $CONFIG_MACOPS_PATH (new key generated)"
+  if [ "$MACOPS_BIND" != "$BIND" ]; then
+    echo "config : created $CONFIG_MACOPS_PATH (new key generated, bind=$MACOPS_BIND inherited from Xcode instance)"
+  else
+    echo "config : created $CONFIG_MACOPS_PATH (new key generated)"
+  fi
 else
   MACOPS_KEY_CREATED=0
   echo "config : kept existing $CONFIG_MACOPS_PATH"
+  # Explicit --bind applies to the mac-ops instance too (symmetric with the
+  # Xcode instance); the agent is reloaded below so the new bind takes effect.
+  if [ "$BIND_SET" = "1" ]; then
+    node -e '
+      const fs = require("fs");
+      const p = process.argv[1];
+      const cfg = JSON.parse(fs.readFileSync(p, "utf8"));
+      cfg.bind = process.argv[2];
+      fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + "\n");
+    ' "$CONFIG_MACOPS_PATH" "$BIND"
+    echo "config : updated bind in $CONFIG_MACOPS_PATH"
+  fi
 fi
 chmod 600 "$CONFIG_MACOPS_PATH"
 
@@ -282,8 +307,8 @@ fi
 echo
 echo "Notes:"
 echo "  - Xcode must be running (mcpbridge auto-detects it; no env vars needed)."
-echo "  - mac-ops is allowlist-only: xcode_cleanup + git tools pinned to the"
-echo "    repo in $MACOPS_OPS_CONFIG_PATH. No free-form commands."
+echo "  - mac-ops is allowlist-only: xcode_cleanup + git tools (repo is a"
+echo "    required per-call parameter). No free-form commands."
 echo "  - Console logs : $LOGS_DIR/mcp-relay.console.log, $LOGS_DIR/mcp-relay-macops.console.log"
 echo "  - mac-ops audit: $LOGS_DIR/mac-ops.log (JSONL, every invocation)"
 echo "  - Child stderr: $LOGS_DIR/mcp-relay.stderr.log, $LOGS_DIR/mcp-relay-macops.stderr.log"
