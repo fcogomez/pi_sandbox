@@ -76,11 +76,9 @@ needs **no env vars** (it auto-detects the running Xcode).
 
 ```sh
 cd mcp-relay            # repo checkout on the Mac
-./install.sh            # loopback default; installs BOTH instances
+./install.sh --repo /path/to/repo          # REQUIRED on every run
 # or, to expose on the VLAN:
-./install.sh --bind <MAC_VLAN_IP> [--port N]
-# point mac-ops at a repo (required on first install; kept on re-runs):
-./install.sh --repo /path/to/repo
+./install.sh --repo /path/to/repo --bind <MAC_VLAN_IP> [--port N]
 ```
 
 `install.sh` installs and reloads two launchd agents: `com.pi.mcp-relay`
@@ -92,9 +90,9 @@ JSON-RPC error and the child exits (clean failure, surfaced to the consumer
 as a WS close with code 4500).
 
 Re-run is idempotent: existing configs (and keys) are kept; both launchd
-agents are rewritten and reloaded; `mac-ops.json` (repo path) is kept unless
-`--repo` is passed again. Console logs: `~/Library/Logs/mcp-relay.console.log`,
-`~/Library/Logs/mcp-relay-macops.console.log`.
+agents are rewritten and reloaded; `mac-ops.json` (repo path) is rewritten
+every run from the required `--repo` flag. Console logs:
+`~/Library/Logs/mcp-relay.console.log`, `~/Library/Logs/mcp-relay-macops.console.log`.
 
 ## Uninstall
 
