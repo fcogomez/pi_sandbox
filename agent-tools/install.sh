@@ -129,8 +129,11 @@ else
   cp -R "$SRC_DIR/." "$DEST_DIR/"
 fi
 rm -rf "$DEST_DIR/test"
-( cd "$DEST_DIR" && "$NODE_BIN" "$("$NODE_BIN" -e 'console.log(require.resolve("npm/bin/npm-cli.js"))' 2>/dev/null || echo npm)" ci --omit=dev --no-audit --no-fund >/dev/null ) || \
-  ( cd "$DEST_DIR" && npm ci --omit=dev --no-audit --no-fund >/dev/null )
+if ! command -v npm >/dev/null 2>&1; then
+  echo "error: npm not found on PATH (node was found at $NODE_BIN, but npm is missing)." >&2
+  exit 1
+fi
+( cd "$DEST_DIR" && npm ci --omit=dev --no-audit --no-fund >/dev/null )
 echo "deps   : ws installed in $DEST_DIR"
 
 # ---- config + key (Xcode bridge instance) ------------------------------------
@@ -175,8 +178,10 @@ if [ -f "$MACOPS_CFG" ]; then
       cfg.bind = process.argv[2];
       fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + "\n");
     ' "$MACOPS_CFG" "$BIND"
+    MACOPS_BIND="$BIND"
     echo "config : kept key, updated bind in $MACOPS_CFG (explicit --bind applies to both instances)"
   else
+    MACOPS_BIND=$("$NODE_BIN" -e 'try{process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).bind||"")}catch(e){}' "$MACOPS_CFG")
     echo "config : kept existing $MACOPS_CFG"
   fi
 else
@@ -201,6 +206,10 @@ if [ -f "$CONFIG_DIR/mac-ops.json" ]; then
   rm -f "$CONFIG_DIR/mac-ops.json"
   echo "config : removed legacy mac-ops.json (repo is now a per-call parameter)"
 fi
+
+# Summary values: read the binds actually in the configs (covers created,
+# kept, and explicitly-updated cases alike).
+XCODE_BIND=$("$NODE_BIN" -e 'try{process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).bind||"")}catch(e){}' "$CFG")
 
 # ---- launchd agent (Xcode bridge) --------------------------------------------
 mkdir -p "$LOG_DIR"
@@ -258,7 +267,7 @@ EOF
 # Reload: bootout ignores "not loaded"; bootstrap re-registers.
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
-echo "launchd: $LABEL loaded (port $PORT, bind $BIND)"
+echo "launchd: $LABEL loaded (port $PORT, bind ${XCODE_BIND:-$BIND})"
 
 launchctl bootout "gui/$(id -u)/$MACOPS_LABEL" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$MACOPS_PLIST"
@@ -295,7 +304,7 @@ if [ -n "$KEY" ]; then
 else
   echo "== agent-tools is running (existing config kept; key not reprinted) =="
 fi
-echo "Current config: port=$PORT bind=$BIND"
+echo "Current config: port=$PORT bind=${XCODE_BIND:-$BIND}"
 echo "The key lives in $CFG. If you lost it, delete the config file and"
 echo "re-run install.sh to generate a new one (consumers will need the new key)."
 
