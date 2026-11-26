@@ -3,15 +3,17 @@
  * remote-stdio.mjs — consumer shim (M1.2). Runs on Unraid (any node host or
  * container); launched as a stdio MCP server by the consumer (Hermes, pi).
  *
- *   local MCP client (stdio, NDJSON)  <->  WS (bearer)  <->  mcp-relay (Mac)
+ *   local MCP client (stdio, NDJSON)  <->  WS (bearer)  <->  agent-tools relay (Mac)
  *
  * Transparent line pipe (probe-verified invariant): one line per JSON-RPC
  * frame on BOTH ends. stdin line -> one WS text frame; WS text frame ->
  * one stdout line (LF-terminated). Stderr is used for diagnostics only.
  *
- * Config (env only — the consumer passes these through):
- *   MCP_RELAY_URL  ws://<mac-host>:<port>   REQUIRED
- *   MCP_RELAY_KEY  base64url bearer key     REQUIRED
+ * Config (env only — the consumer passes these through). The AGENT_TOOLS_*
+ * names are canonical; the legacy MCP_RELAY_* names still work (deprecated).
+ * Point it at the instance you want: 3129 = Xcode tools, 3130 = mac-ops.
+ *   AGENT_TOOLS_URL  ws://<mac-host>:<port>   REQUIRED
+ *   AGENT_TOOLS_KEY  base64url bearer key     REQUIRED
  * Missing/empty -> stderr + exit 1.
  *
  * Relay connection closed -> stderr message (close code + payload) + exit 1.
@@ -21,20 +23,29 @@
 import { WebSocket } from "ws";
 import process from "node:process";
 
-const url = (process.env.MCP_RELAY_URL || "").trim();
-const key = (process.env.MCP_RELAY_KEY || "").trim();
+const envFirst = (...names) => {
+  for (const n of names) {
+    const v = process.env[n];
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  return "";
+};
+
+const url = envFirst("AGENT_TOOLS_URL", "MCP_RELAY_URL");
+const key = envFirst("AGENT_TOOLS_KEY", "MCP_RELAY_KEY");
 
 if (!url || !key) {
   process.stderr.write(
-    "remote-stdio: MCP_RELAY_URL and MCP_RELAY_KEY are both required.\n" +
+    "remote-stdio: AGENT_TOOLS_URL and AGENT_TOOLS_KEY are both required.\n" +
       "  Example env:\n" +
-      "    MCP_RELAY_URL=ws://<mac-host>:3129\n" +
-      "    MCP_RELAY_KEY=<key from the Mac's mcp-relay config>\n",
+      "    AGENT_TOOLS_URL=ws://<mac-host>:3129\n" +
+      "    AGENT_TOOLS_KEY=<key from the Mac's agent-tools config>\n" +
+      "  (legacy MCP_RELAY_URL / MCP_RELAY_KEY still accepted)\n",
   );
   process.exit(1);
 }
 if (!(url.startsWith("ws://") || url.startsWith("wss://"))) {
-  process.stderr.write(`remote-stdio: MCP_RELAY_URL must be ws:// or wss:// (got ${url})\n`);
+  process.stderr.write(`remote-stdio: AGENT_TOOLS_URL must be ws:// or wss:// (got ${url})\n`);
   process.exit(1);
 }
 

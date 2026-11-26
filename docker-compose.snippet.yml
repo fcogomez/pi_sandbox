@@ -29,11 +29,11 @@
       PI_OFFLINE: 1
       PI_SKIP_VERSION_CHECK: 1
       PI_TELEMETRY: 0
-      # Xcode MCP relay (mcp-relay, ticket M1.2) — placeholders only.
+      # Xcode MCP relay (agent-tools, ticket M1.2) — placeholders only.
       # Set real values in .env: the Mac's VLAN IP:port and the key printed
-      # once by mcp-relay/install.sh on the Mac.
-      MCP_RELAY_URL: ${MCP_RELAY_URL:-ws://MAC_IP:3129}
-      MCP_RELAY_KEY: ${MCP_RELAY_KEY:-CHANGE_ME_RELAY_KEY}
+      # once by agent-tools/install.sh on the Mac.
+      AGENT_TOOLS_URL: ${AGENT_TOOLS_URL:-ws://MAC_IP:3129}
+      AGENT_TOOLS_KEY: ${AGENT_TOOLS_KEY:-CHANGE_ME_RELAY_KEY}
     volumes:
       - ${HOST_WORKSPACE:-/path/to/your/workspace}:/home/pi/workspace
       - pi-agent-home:/home/pi/.pi/agent

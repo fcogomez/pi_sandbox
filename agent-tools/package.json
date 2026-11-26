@@ -1,8 +1,8 @@
 {
-  "name": "mcp-relay",
+  "name": "agent-tools",
   "version": "0.1.0",
   "private": true,
-  "description": "Mac-side mcpbridge relay (launchd, stdio<->WS, bearer auth) + Unraid consumer shim (ticket M1.2)",
+  "description": "agent-tools relay (launchd, stdio<->WS, bearer auth) + Unraid consumer shim; Xcode bridge + mac-ops instances (ticket M1.2)",
   "type": "module",
   "scripts": {
     "test": "node --test test/*.test.mjs"

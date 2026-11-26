@@ -20,14 +20,14 @@ import { WebSocket } from "ws";
  * M1.2 relay tests.
  *
  * Fully offline: the relay runs against the fake-mcpbridge.mjs fixture
- * (MCP_RELAY_BRIDGE_CMD), on an EPHEMERAL port bound to 127.0.0.1, with a
+ * (AGENT_TOOLS_BRIDGE_CMD), on an EPHEMERAL port bound to 127.0.0.1, with a
  * sandboxed HOME (config + logs live under it). No xcrun, no mcpbridge,
  * no LAN.
  */
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const FAKE = join(ROOT, "test", "fake-mcpbridge.mjs");
-const TMP = mkdtempSync(join(tmpdir(), "mcp-relay-test-"));
+const TMP = mkdtempSync(join(tmpdir(), "agent-tools-test-"));
 
 after(() => rmSync(TMP, { recursive: true, force: true }));
 
@@ -49,7 +49,7 @@ let relays = [];
 
 function startRelay({ port, bridgeCmd, debug = false }) {
   const home = mkdtempSync(join(TMP, "home-"));
-  const cfgDir = join(home, "Library/Application Support/mcp-relay");
+  const cfgDir = join(home, "Library/Application Support/agent-tools");
   mkdirSync(cfgDir, { recursive: true });
   const key = "test-" + crypto.randomBytes(16).toString("base64url");
   writeFileSync(
@@ -57,7 +57,7 @@ function startRelay({ port, bridgeCmd, debug = false }) {
     JSON.stringify({ port, bind: "127.0.0.1", key, debug }),
   );
   const child = spawn(process.execPath, [join(ROOT, "relay.mjs")], {
-    env: { ...process.env, HOME: home, MCP_RELAY_BRIDGE_CMD: bridgeCmd },
+    env: { ...process.env, HOME: home, AGENT_TOOLS_BRIDGE_CMD: bridgeCmd },
     stdio: ["ignore", "ignore", "pipe"],
   });
   const relay = {

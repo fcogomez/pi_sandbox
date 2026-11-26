@@ -42,7 +42,7 @@ export const DEFAULT_GATED_TOOLS: readonly string[] = [
 ];
 
 /**
- * M2.1: base names of the read-only Xcode MCP tools (mcp-relay server
+ * M2.1: base names of the read-only Xcode MCP tools (agent-tools server
  * `xcode-tools`) that are CARVED OUT of the `mcp__xcode_tools__*` gated
  * catch-all — they run without a permission prompt. Exported as
  * `ACP_UNGATED_TOOLS` (comma-joined, full tool names) to the pi subprocess.

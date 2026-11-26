@@ -165,7 +165,7 @@ on each transport, with 1 shared documented deviation:
   verdict, and the TCK itself lists the MCP/terminal/filesystem
   capability surfaces as "not yet covered". Forwarding `mcpServers` to pi
   is a deliberate follow-up, not an oversight. Mitigated in deployment: the
-  image registers the `xcode-tools` MCP server globally (mcp-relay, ticket
+  image registers the `xcode-tools` MCP server globally (agent-tools, ticket
   M1.2), so Xcode-driven sessions have the Xcode tools without
   `session/new` forwarding.
 

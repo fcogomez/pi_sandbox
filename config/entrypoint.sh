@@ -115,26 +115,30 @@ Never write secrets into memory. If hindsight errors (server down, auth), contin
 EOF
 ARGS+=("--append-system-prompt" "$(cat /tmp/.pi-mem-prompt)")
 
-# --- xcode-tools MCP relay (mcp-relay, ticket M1.2; renamed in M2.1) ----
+# --- xcode-tools MCP relay (agent-tools, ticket M1.2; renamed in M2.1) ----
 # Registers the "xcode-tools" MCP server (in-image pi) pointing at the
-# consumer shim /opt/mcp-relay/remote-stdio.mjs, which speaks WS (bearer)
+# consumer shim /opt/agent-tools/remote-stdio.mjs, which speaks WS (bearer)
 # to the Mac-side relay. Only when real (non-placeholder) values are
 # configured. Upserts mcpServers["xcode-tools"] in
 # ${PI_CODING_AGENT_DIR}/mcp.json (pi 1.5.2 user-level MCP config),
 # preserving any other entries the user added.
 #
+# Env names: AGENT_TOOLS_URL / AGENT_TOOLS_KEY are canonical; the legacy
+# MCP_RELAY_URL / MCP_RELAY_KEY are still honored (deprecated).
+#
 # MIGRATION (M2.1): the pre-rename "xcode" entry is the same relay under
 # the old name. It is DELETED only when it still points at the shipped
-# shim (args[0] == /opt/mcp-relay/remote-stdio.mjs); a user-modified
-# "xcode" entry pointing elsewhere is left untouched.
-MCP_RELAY_URL="${MCP_RELAY_URL:-}"
-MCP_RELAY_KEY="${MCP_RELAY_KEY:-}"
-if [ -n "$MCP_RELAY_URL" ] && [ -n "$MCP_RELAY_KEY" ] \
-   && [ "$MCP_RELAY_URL" != "ws://MAC_IP:3129" ] && [ "$MCP_RELAY_KEY" != "CHANGE_ME_RELAY_KEY" ]; then
+# shim (args[0] == the old or new /opt/.../remote-stdio.mjs path); a
+# user-modified "xcode" entry pointing elsewhere is left untouched.
+AGENT_TOOLS_URL="${AGENT_TOOLS_URL:-${MCP_RELAY_URL:-}}"
+AGENT_TOOLS_KEY="${AGENT_TOOLS_KEY:-${MCP_RELAY_KEY:-}}"
+if [ -n "$AGENT_TOOLS_URL" ] && [ -n "$AGENT_TOOLS_KEY" ] \
+   && [ "$AGENT_TOOLS_URL" != "ws://MAC_IP:3129" ] && [ "$AGENT_TOOLS_KEY" != "CHANGE_ME_RELAY_KEY" ]; then
   node -e '
     const fs = require("fs");
     const p = process.argv[1];
-    const SHIM = "/opt/mcp-relay/remote-stdio.mjs";
+    const SHIM = "/opt/agent-tools/remote-stdio.mjs";
+    const SHIM_LEGACY = "/opt/mcp-relay/remote-stdio.mjs";
     let cfg = { mcpServers: {} };
     try { cfg = JSON.parse(fs.readFileSync(p, "utf8")); } catch {}
     if (!cfg.mcpServers || typeof cfg.mcpServers !== "object") cfg.mcpServers = {};
@@ -142,20 +146,26 @@ if [ -n "$MCP_RELAY_URL" ] && [ -n "$MCP_RELAY_KEY" ] \
     // entry; never delete a user-modified entry that points elsewhere.
     const old = cfg.mcpServers.xcode;
     if (old && typeof old === "object" && Array.isArray(old.args)
-        && old.args[0] === SHIM) {
+        && (old.args[0] === SHIM || old.args[0] === SHIM_LEGACY)) {
       delete cfg.mcpServers.xcode;
     }
+    // Inject both env-name generations so any shim version works.
     cfg.mcpServers["xcode-tools"] = {
       command: "node",
       args: [SHIM],
-      env: { MCP_RELAY_URL: process.env.MCP_RELAY_URL, MCP_RELAY_KEY: process.env.MCP_RELAY_KEY },
+      env: {
+        AGENT_TOOLS_URL: process.env.AGENT_TOOLS_URL,
+        AGENT_TOOLS_KEY: process.env.AGENT_TOOLS_KEY,
+        MCP_RELAY_URL: process.env.AGENT_TOOLS_URL,
+        MCP_RELAY_KEY: process.env.AGENT_TOOLS_KEY
+      },
       description: "Xcode tooling relayed from the Mac (DocumentationSearch, project state, builds)."
     };
     fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + "\n");
   ' "${PI_CODING_AGENT_DIR}/mcp.json"
-  echo "[pi-sandbox] Registered xcode-tools MCP server (relay: ${MCP_RELAY_URL})"
+  echo "[pi-sandbox] Registered xcode-tools MCP server (relay: ${AGENT_TOOLS_URL})"
 else
-  echo "[pi-sandbox] xcode-tools MCP relay not configured (set MCP_RELAY_URL + MCP_RELAY_KEY to real values to enable)"
+  echo "[pi-sandbox] xcode-tools MCP relay not configured (set AGENT_TOOLS_URL + AGENT_TOOLS_KEY to real values to enable)"
 fi
 
 # --- mcp mode: run the MCP bridge daemon instead of exec'ing pi ------------

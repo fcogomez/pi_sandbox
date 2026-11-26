@@ -23,14 +23,14 @@ variables — override at build time (`--build-arg`) or runtime (`-e` / compose
 
 | File | Purpose |
 |------|---------|
-| `Dockerfile` | ubuntu:24.04, non-root user (matching UID/GID), Node 26, Python 3 (+pip, venv), OpenJDK 25 + Gradle, global `pi` install, bundled MCP bridge (`mcp/`), ACP adapter (`acp/`), MCP relay consumer shim (`mcp-relay/`) |
+| `Dockerfile` | ubuntu:24.04, non-root user (matching UID/GID), Node 26, Python 3 (+pip, venv), OpenJDK 25 + Gradle, global `pi` install, bundled MCP bridge (`mcp/`), ACP adapter (`acp/`), MCP relay consumer shim (`agent-tools/`) |
 | `config/entrypoint.sh` | Startup script: generates `models.json` from env vars, then `exec pi "$@"` — or the MCP bridge daemon in `mcp` mode / the ACP server in `acp` mode; registers the `xcode-tools` MCP server when relay env is set |
 | `config/models.json` | Reference example of the generated `models.json` (not loaded directly) |
 | `mcp/server.js` | MCP bridge (HTTP/StreamableHTTP, Node + `@modelcontextprotocol/sdk`): exposes pi as a serial task queue to MCP clients (Hermes) |
 | `mcp/package.json` | Bridge dependencies (SDK + zod); `package-lock.json` pinned for `npm ci` |
 | `acp/` | ACP adapter package (stdio + WS transports): tool mapping, permission prompts, fs read/write delegation, session load/resume — see `acp/README.md` |
 | `proxy/` | Mac-side ACP proxy: stdio↔WS bridge between Xcode and the ACP server — see `proxy/README.md` |
-| `mcp-relay/` | Mac-side MCP relay daemon (launchd) + Unraid stdio shim: lets agents on Unraid use Xcode's MCP tools — see `mcp-relay/README.md` |
+| `agent-tools/` | Mac-side MCP relay daemon (launchd) + Unraid stdio shim: lets agents on Unraid use Xcode's MCP tools — see `agent-tools/README.md` |
 | `scripts/mcpbridge-probe.mjs` | MCP wire research probe for `xcrun mcpbridge` (handshake, tool list, read-only call) |
 | `docker-compose.yml` | Standalone services: `pi-sandbox` (interactive) + `pi-sandbox-mcp` (daemon) + `pi-sandbox-acp` (ACP daemon), joins `traefik` network |
 | `docker-compose.snippet.yml` | Block to merge into a shared stack |
@@ -129,8 +129,8 @@ Override at build time (`--build-arg`) or runtime (`-e` / compose `environment:`
 
 | Var | Default | Purpose |
 |-----|---------|---------|
-| `MCP_RELAY_URL` | `ws://MAC_IP:3129` (placeholder) | Mac relay address (the Mac's VLAN IP). When set to a real value together with the key, the entrypoint registers the `xcode-tools` MCP server for in-container pi |
-| `MCP_RELAY_KEY` | *(placeholder)* | Bearer key for the relay — printed once by `mcp-relay/install.sh` on the Mac |
+| `AGENT_TOOLS_URL` | `ws://MAC_IP:3129` (placeholder) | Mac relay address (the Mac's VLAN IP). When set to a real value together with the key, the entrypoint registers the `xcode-tools` MCP server for in-container pi |
+| `AGENT_TOOLS_KEY` | *(placeholder)* | Bearer key for the relay — printed once by `agent-tools/install.sh` on the Mac |
 
 ## How UID/GID works
 
@@ -276,17 +276,17 @@ crash logs, localization, project file ops, and documentation search — that
 live on the Mac.
 
 Xcode exposes those tools only through `xcrun mcpbridge`, a stdio MCP server
-that auto-detects the running Xcode (no env vars required). `mcp-relay/`
+that auto-detects the running Xcode (no env vars required). `agent-tools/`
 ships two pieces:
 
 - **`relay.mjs`** (Mac daemon under launchd): one WS listener that spawns
   `xcrun mcpbridge` per connection and pipes stdio 1:1. Bearer key required
   on every connection; binds to `127.0.0.1` unless `install.sh --bind <ip>`
   says otherwise; no public exposure.
-- **`remote-stdio.mjs`** (in the image at `/opt/mcp-relay/`): the consumer
+- **`remote-stdio.mjs`** (in the image at `/opt/agent-tools/`): the consumer
   shim — a stdio MCP server that pipes to the relay over WS.
 
-When `MCP_RELAY_URL` + `MCP_RELAY_KEY` are set to real values, the entrypoint
+When `AGENT_TOOLS_URL` + `AGENT_TOOLS_KEY` are set to real values, the entrypoint
 registers an **`xcode-tools`** MCP server for in-container pi (stdio → shim →
 relay → mcpbridge → Xcode). The same shim works directly as an Hermes
 `mcp_servers` entry. In ACP (Xcode-driven) sessions the mutating Xcode tools
@@ -300,9 +300,9 @@ Tools" set to Always or While Xcode is Open. With Xcode closed, the bridge
 fails cleanly and the error is visible to the consumer (retry after opening
 Xcode).
 
-Install: `git pull && cd mcp-relay && ./install.sh --bind <mac-static-ip>`
+Install: `git pull && cd agent-tools && ./install.sh --bind <mac-static-ip>`
 on the Mac — prints the key once plus a ready-to-paste consumer snippet.
-Details and the security model: `mcp-relay/README.md`.
+Details and the security model: `agent-tools/README.md`.
 
 ## Example: use in a shared compose stack
 

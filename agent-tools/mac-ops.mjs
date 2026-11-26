@@ -2,7 +2,7 @@
 /**
  * mac-ops — allowlist MCP server (stdio, NDJSON JSON-RPC 2.0).
  *
- * Run behind the mcp-relay daemon as a SECOND relay instance:
+ * Run behind the agent-tools relay daemon as a SECOND relay instance:
  *
  *   consumer (WS, bearer)  <->  relay.mjs (port 3130)  <->  node mac-ops.mjs
  *

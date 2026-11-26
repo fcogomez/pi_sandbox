@@ -24,7 +24,7 @@ import net from "node:net";
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const SHIM = join(ROOT, "remote-stdio.mjs");
 const FAKE = join(ROOT, "test", "fake-mcpbridge.mjs");
-const TMP = mkdtempSync(join(tmpdir(), "mcp-relay-shim-"));
+const TMP = mkdtempSync(join(tmpdir(), "agent-tools-shim-"));
 
 const procs = [];
 after(() => {
@@ -51,7 +51,7 @@ function freePort() {
 
 async function startRelay({ port, bridgeExtra = "" }) {
   const home = mkdtempSync(join(TMP, "home-"));
-  const cfgDir = join(home, "Library/Application Support/mcp-relay");
+  const cfgDir = join(home, "Library/Application Support/agent-tools");
   mkdirSync(cfgDir, { recursive: true });
   const key = "test-" + crypto.randomBytes(16).toString("base64url");
   writeFileSync(join(cfgDir, "config.json"), JSON.stringify({ port, bind: "127.0.0.1", key, debug: false }));
@@ -60,7 +60,7 @@ async function startRelay({ port, bridgeExtra = "" }) {
       env: {
         ...process.env,
         HOME: home,
-        MCP_RELAY_BRIDGE_CMD: `node ${FAKE} ${bridgeExtra}`.trim(),
+        AGENT_TOOLS_BRIDGE_CMD: `node ${FAKE} ${bridgeExtra}`.trim(),
       },
       stdio: ["ignore", "ignore", "pipe"],
     }),
@@ -92,8 +92,8 @@ function startShim({ port, key, envExtra = {} }) {
     spawn(process.execPath, [SHIM], {
       env: {
         ...process.env,
-        MCP_RELAY_URL: `ws://127.0.0.1:${port}`,
-        MCP_RELAY_KEY: key,
+        AGENT_TOOLS_URL: `ws://127.0.0.1:${port}`,
+        AGENT_TOOLS_KEY: key,
         ...envExtra,
       },
       stdio: ["pipe", "pipe", "pipe"],
@@ -215,10 +215,12 @@ test("shim: relay closes -> nonzero exit + stderr message", async () => {
 // ---------------------------------------------------------------------------
 // (c) missing env -> exit 1
 // ---------------------------------------------------------------------------
-test("shim: missing MCP_RELAY_URL / MCP_RELAY_KEY -> exit 1", async () => {
+test("shim: missing AGENT_TOOLS_URL / AGENT_TOOLS_KEY -> exit 1", async () => {
+  // Both name generations must be absent for the shim to fail.
+  const ALL_ENV_NAMES = ["AGENT_TOOLS_URL", "AGENT_TOOLS_KEY", "MCP_RELAY_URL", "MCP_RELAY_KEY"];
   for (const missing of [
-    ["MCP_RELAY_URL", "MCP_RELAY_KEY"],
-    ["MCP_RELAY_KEY"],
+    ALL_ENV_NAMES,
+    ["AGENT_TOOLS_URL", "AGENT_TOOLS_KEY", "MCP_RELAY_KEY"],
   ]) {
     const child = track(
       spawn(process.execPath, [SHIM], { env: envWithout(missing), stdio: ["pipe", "pipe", "pipe"] }),
@@ -235,6 +237,39 @@ test("shim: missing MCP_RELAY_URL / MCP_RELAY_KEY -> exit 1", async () => {
       });
     });
     assert.equal(code, 1, `expected exit 1 with missing ${missing.join(", ")}`);
-    for (const v of ["MCP_RELAY_URL", "MCP_RELAY_KEY"]) assert.match(out, new RegExp(v));
+    for (const v of ["AGENT_TOOLS_URL", "AGENT_TOOLS_KEY"]) assert.match(out, new RegExp(v));
   }
+});
+
+// ---------------------------------------------------------------------------
+// (d) legacy env names still work (deprecated fallback)
+// ---------------------------------------------------------------------------
+test("shim: legacy MCP_RELAY_URL / MCP_RELAY_KEY still connect", async () => {
+  const port = await freePort();
+  const relay = await startRelay({ port });
+  await relay.ready;
+
+  const env = envWithout(["AGENT_TOOLS_URL", "AGENT_TOOLS_KEY"]);
+  env.MCP_RELAY_URL = `ws://127.0.0.1:${port}`;
+  env.MCP_RELAY_KEY = relay.key;
+  const child = track(
+    spawn(process.execPath, [SHIM], { env, stdio: ["pipe", "pipe", "pipe"] }),
+  );
+  const init = await new Promise((resolve, reject) => {
+    let buf = "";
+    const t = setTimeout(() => reject(new Error("legacy-env shim: no initialize response")), 10000);
+    child.stdout.on("data", (d) => {
+      buf += d.toString();
+      const nl = buf.indexOf("\n");
+      if (nl >= 0) {
+        clearTimeout(t);
+        try { resolve(JSON.parse(buf.slice(0, nl))); } catch (e) { reject(e); }
+      }
+    });
+    child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "0" } } }) + "\n");
+  });
+  assert.equal(init.result.serverInfo.name, "fake-xcode");
+  child.stdin.end();
+  await new Promise((res) => child.once("exit", res));
+  relay.child.kill("SIGTERM");
 });

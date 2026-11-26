@@ -1,34 +1,37 @@
 #!/usr/bin/env node
 /**
- * mcp-relay — Mac-side relay daemon (M1.2).
+ * agent-tools — Mac-side relay daemon (M1.2).
  *
- * Bridges MCP clients on the LAN (Unraid: Hermes / pi) to the Mac's
- * `xcrun mcpbridge` (Xcode tools MCP server, stdio, NDJSON JSON-RPC 2.0).
+ * Bridges MCP clients on the LAN (Unraid: Hermes / pi) to the Mac's bridge
+ * child (default `xcrun mcpbridge` — Xcode tools MCP server, stdio, NDJSON
+ * JSON-RPC 2.0; configurable via AGENT_TOOLS_BRIDGE_CMD, e.g.
+ * `node .../mac-ops.mjs` for the mac-ops instance).
  *
- *   consumer (WS, bearer)  <->  relay.mjs  <->  xcrun mcpbridge (stdio, 1 per conn)
+ *   consumer (WS, bearer)  <->  relay.mjs  <->  bridge child (stdio, 1 per conn)
  *
  * Contract (probe-verified, scripts/mcpbridge-probe.mjs):
  *   - one WS text frame   -> one child-stdin line (LF-terminated)
  *   - one child stdout line -> one WS text frame
  *   - child stderr        -> relay log file ONLY, never into the MCP stream
  *
- * Auth: the WS upgrade request must carry `Authorization: Bearer <key>`
- * (timing-safe comparison against config.key). Failure -> HTTP 401 on the
+ * Auth: the WS upgrade request must carry the bearer token (the config key);
+ * it is compared timing-safe. Failure -> HTTP 401 on the
  * upgrade and NO child process is spawned.
  *
- * Config: ~/Library/Application Support/mcp-relay/config.json
+ * Config: ~/Library/Application Support/agent-tools/config.json
  *   { "port": 3129, "bind": "127.0.0.1", "key": "<base64url>", "debug": false }
  *   Missing file -> print guidance, exit 1.
  *
- * Env overrides (testing / non-standard deployments):
- *   MCP_RELAY_CONFIG      config path (default as above)
- *   MCP_RELAY_BRIDGE_CMD  full command line for the MCP server (default
+ * Env overrides (testing / non-standard deployments). The AGENT_TOOLS_*
+ * names are canonical; the legacy MCP_RELAY_* names still work (deprecated).
+ *   AGENT_TOOLS_CONFIG      config path (default as above)
+ *   AGENT_TOOLS_BRIDGE_CMD  full command line for the MCP server (default
  *                         "xcrun mcpbridge"); test hooks point this at the
  *                         fake fixture. No EXTRA env vars are ever added to
  *                         the child (mcpbridge auto-detects the running
  *                         Xcode with no env at all).
- *   MCP_RELAY_FRAME_LOG   debug frame log path (default ~/Library/Logs/mcp-relay.log)
- *   MCP_RELAY_STDERR_LOG  child-stderr log path (default ~/Library/Logs/mcp-relay.stderr.log)
+ *   AGENT_TOOLS_FRAME_LOG   debug frame log path (default ~/Library/Logs/agent-tools.log)
+ *   AGENT_TOOLS_STDERR_LOG  child-stderr log path (default ~/Library/Logs/agent-tools.stderr.log)
  */
 
 import { createServer } from "node:http";
@@ -40,13 +43,23 @@ import crypto from "node:crypto";
 import { WebSocketServer } from "ws";
 import process from "node:process";
 
+// Env override helper: new AGENT_TOOLS_* name first, legacy MCP_RELAY_*
+// still honored (deprecated).
+const envFirst = (...names) => {
+  for (const n of names) {
+    const v = process.env[n];
+    if (typeof v === "string" && v.trim()) return v;
+  }
+  return null;
+};
+
 const DEFAULT_CONFIG = join(
   homedir(),
-  "Library/Application Support/mcp-relay/config.json",
+  "Library/Application Support/agent-tools/config.json",
 );
-const DEFAULT_FRAME_LOG = join(homedir(), "Library/Logs/mcp-relay.log");
-const DEFAULT_STDERR_LOG = join(homedir(), "Library/Logs/mcp-relay.stderr.log");
-const CONFIG_DIR = join(homedir(), "Library/Application Support/mcp-relay");
+const DEFAULT_FRAME_LOG = join(homedir(), "Library/Logs/agent-tools.log");
+const DEFAULT_STDERR_LOG = join(homedir(), "Library/Logs/agent-tools.stderr.log");
+const CONFIG_DIR = join(homedir(), "Library/Application Support/agent-tools");
 const LOGS_DIR = join(homedir(), "Library/Logs");
 
 // ---------------------------------------------------------------------------
@@ -74,9 +87,9 @@ function loadConfig(path) {
   } catch {
     console.error(
       [
-        `mcp-relay: config not found at ${path}`,
+        `agent-tools: config not found at ${path}`,
         "",
-        "  Run mcp-relay/install.sh (creates the config + generates a key,",
+        "  Run agent-tools/install.sh (creates the config + generates a key,",
         "  installs the launchd agent), or create it manually:",
         "",
         `    mkdir -p ${CONFIG_DIR}`,
@@ -112,13 +125,13 @@ function loadConfig(path) {
     bind,
     key: cfg.key,
     debug: cfg.debug === true,
-    frameLog: process.env.MCP_RELAY_FRAME_LOG || DEFAULT_FRAME_LOG,
-    stderrLog: process.env.MCP_RELAY_STDERR_LOG || DEFAULT_STDERR_LOG,
-    bridgeCmd: process.env.MCP_RELAY_BRIDGE_CMD || "xcrun mcpbridge",
+    frameLog: envFirst("AGENT_TOOLS_FRAME_LOG", "MCP_RELAY_FRAME_LOG") || DEFAULT_FRAME_LOG,
+    stderrLog: envFirst("AGENT_TOOLS_STDERR_LOG", "MCP_RELAY_STDERR_LOG") || DEFAULT_STDERR_LOG,
+    bridgeCmd: envFirst("AGENT_TOOLS_BRIDGE_CMD", "MCP_RELAY_BRIDGE_CMD") || "xcrun mcpbridge",
   };
 }
 
-const CONFIG_PATH = process.env.MCP_RELAY_CONFIG || DEFAULT_CONFIG;
+const CONFIG_PATH = envFirst("AGENT_TOOLS_CONFIG", "MCP_RELAY_CONFIG") || DEFAULT_CONFIG;
 const cfg = loadConfig(CONFIG_PATH);
 mkdirSync(join(homedir(), "Library/Logs"), { recursive: true });
 
@@ -235,7 +248,7 @@ let connSeq = 0;
 
 const server = createServer((req, res) => {
   res.writeHead(404, { "Content-Type": "text/plain" });
-  res.end("mcp-relay: WebSocket endpoint (GET with Upgrade header only)\n");
+  res.end("agent-tools: WebSocket endpoint (GET with Upgrade header only)\n");
 });
 
 server.on("upgrade", (req, socket, head) => {
