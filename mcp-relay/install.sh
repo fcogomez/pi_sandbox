@@ -2,10 +2,17 @@
 # install.sh (ticket M1.2) — Mac-side install for the mcp-relay daemon.
 # Run on the Mac (where Xcode + `xcrun mcpbridge` live). Idempotent; safe to re-run.
 #
-#   node relay.mjs            WS (bearer) <-> xcrun mcpbridge (stdio), one child per connection
+# Installs TWO relay instances:
+#   1. Xcode bridge : port 3129, relay.mjs <-> xcrun mcpbridge (Xcode tools)
+#   2. mac-ops      : port 3130, relay.mjs <-> node mac-ops.mjs
+#                     (allowlist ops only: xcode_cleanup + pinned git tools;
+#                      no free-form command execution)
 #
-# Defaults: port 3129, bind 127.0.0.1 (loopback only — VLAN exposure requires
-# the explicit --bind flag; see mcp-relay/README.md security model).
+# Defaults: ports 3129/3130, bind 127.0.0.1 (loopback only — VLAN exposure
+# requires the explicit --bind flag; see mcp-relay/README.md security model).
+#
+# Flags: --port N (instance 1), --bind IP (both), --repo PATH (mac-ops git
+# repo; required on first install, kept on re-runs unless given again).
 set -euo pipefail
 
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -16,6 +23,14 @@ LOGS_DIR="$HOME/Library/Logs"
 PLIST_PATH="$HOME/Library/LaunchAgents/com.pi.mcp-relay.plist"
 LABEL="com.pi.mcp-relay"
 
+MACOPS_PORT=3130
+CONFIG_MACOPS_PATH="$CONFIG_DIR/config-macops.json"
+MACOPS_OPS_CONFIG_PATH="$CONFIG_DIR/mac-ops.json"
+MACOPS_PLIST_PATH="$HOME/Library/LaunchAgents/com.pi.mcp-relay-macops.plist"
+MACOPS_LABEL="com.pi.mcp-relay-macops"
+REPO_PATH=""
+REPO_SET=0
+
 PORT=3129
 BIND="127.0.0.1"
 PORT_SET=0
@@ -25,7 +40,8 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --port) PORT="${2:?--port requires a value}"; PORT_SET=1; shift 2 ;;
     --bind) BIND="${2:?--bind requires a value}"; BIND_SET=1; shift 2 ;;
-    *) echo "Unknown flag: $1 (usage: install.sh [--port N] [--bind IP])" >&2; exit 2 ;;
+    --repo) REPO_PATH="${2:?--repo requires a value}"; REPO_SET=1; shift 2 ;;
+    *) echo "Unknown flag: $1 (usage: install.sh [--port N] [--bind IP] [--repo PATH])" >&2; exit 2 ;;
   esac
 done
 
@@ -33,8 +49,21 @@ echo "== mcp-relay install =="
 echo "source : $SRC_DIR"
 echo "target : $DEST_DIR"
 echo "config : $CONFIG_PATH"
-echo "port   : $PORT"
+echo "port   : $PORT (xcode) / $MACOPS_PORT (mac-ops)"
 echo "bind   : $BIND"
+REPO_DISPLAY="$REPO_PATH"
+if [ -z "$REPO_DISPLAY" ] && [ -f "$MACOPS_OPS_CONFIG_PATH" ]; then
+  REPO_DISPLAY="$(node -e 'const fs=require("fs");try{process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).repoPath||"")}catch{process.stdout.write("?")}' "$MACOPS_OPS_CONFIG_PATH")"
+fi
+echo "repo   : ${REPO_DISPLAY:-<unset — pass --repo>}"
+
+# 0. Guard: the mac-ops bridge command is passed as whitespace-split argv;
+#    a DEST_DIR containing spaces would break it.
+case "$DEST_DIR" in
+  *[[:space:]]*)
+    echo "ERROR: DEST_DIR contains whitespace ($DEST_DIR); the mac-ops bridge command cannot be passed safely. Move it to a path without spaces." >&2
+    exit 1 ;;
+esac
 
 # 1. Node check (>= 20)
 if ! command -v node >/dev/null 2>&1; then
@@ -53,6 +82,7 @@ fi
 # 2. Copy files + npm ci (deps: ws only; package-lock.json is committed)
 mkdir -p "$DEST_DIR"
 cp "$SRC_DIR/relay.mjs" "$DEST_DIR/"
+cp "$SRC_DIR/mac-ops.mjs" "$DEST_DIR/"
 cp "$SRC_DIR/package.json" "$DEST_DIR/"
 cp "$SRC_DIR/package-lock.json" "$DEST_DIR/"
 (cd "$DEST_DIR" && npm ci --omit=dev --no-audit --no-fund)
@@ -90,6 +120,46 @@ else
   fi
 fi
 chmod 600 "$CONFIG_PATH"
+
+# 3b. mac-ops configs (never overwrite an existing relay-instance config)
+MACOPS_KEY_CREATED=0
+if [ ! -f "$CONFIG_MACOPS_PATH" ]; then
+  NEW_KEY_MACOPS="$(node -e "process.stdout.write(require('crypto').randomBytes(32).toString('base64url'))")"
+  cat > "$CONFIG_MACOPS_PATH" <<EOF
+{
+  "port": $MACOPS_PORT,
+  "bind": "$BIND",
+  "key": "$NEW_KEY_MACOPS",
+  "debug": false
+}
+EOF
+  MACOPS_KEY_CREATED=1
+  echo "config : created $CONFIG_MACOPS_PATH (new key generated)"
+else
+  MACOPS_KEY_CREATED=0
+  echo "config : kept existing $CONFIG_MACOPS_PATH"
+fi
+chmod 600 "$CONFIG_MACOPS_PATH"
+
+# mac-ops server config: pinned repo. Explicit --repo always takes effect;
+# without it, an existing mac-ops.json is kept (idempotent re-runs).
+if [ "$REPO_SET" = "1" ]; then
+  cat > "$MACOPS_OPS_CONFIG_PATH" <<EOF
+{
+  "repoPath": "$REPO_PATH"
+}
+EOF
+  chmod 600 "$MACOPS_OPS_CONFIG_PATH"
+  echo "config : wrote $MACOPS_OPS_CONFIG_PATH (repoPath=$REPO_PATH)"
+  if [ ! -d "$REPO_PATH/.git" ]; then
+    echo "WARN   : $REPO_PATH is not a git repo yet — git tools will error until it exists." >&2
+  fi
+elif [ -f "$MACOPS_OPS_CONFIG_PATH" ]; then
+  echo "config : kept existing $MACOPS_OPS_CONFIG_PATH (pass --repo PATH to change the repo)"
+else
+  echo "ERROR: first mac-ops install needs a repo path: ./install.sh --repo /path/to/repo" >&2
+  exit 1
+fi
 
 # 4. launchd agent
 cat > "$PLIST_PATH" <<EOF
@@ -129,6 +199,54 @@ else
   echo "WARN: $LABEL may not have loaded; check $LOGS_DIR/mcp-relay.console.log" >&2
 fi
 
+# 5b. mac-ops launchd agent (separate instance: port 3130 -> node mac-ops.mjs,
+#     separate key, separate logs; frame log off, stderr logged)
+cat > "$MACOPS_PLIST_PATH" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$MACOPS_LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$NODE_BIN</string>
+    <string>$DEST_DIR/relay.mjs</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>$DEST_DIR</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>MCP_RELAY_CONFIG</key>
+    <string>$CONFIG_MACOPS_PATH</string>
+    <key>MCP_RELAY_BRIDGE_CMD</key>
+    <string>$NODE_BIN $DEST_DIR/mac-ops.mjs</string>
+    <key>MCP_RELAY_STDERR_LOG</key>
+    <string>$LOGS_DIR/mcp-relay-macops.stderr.log</string>
+    <key>MCP_RELAY_FRAME_LOG</key>
+    <string>$LOGS_DIR/mcp-relay-macops.log</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>$LOGS_DIR/mcp-relay-macops.console.log</string>
+  <key>StandardErrorPath</key>
+  <string>$LOGS_DIR/mcp-relay-macops.console.log</string>
+</dict>
+</plist>
+EOF
+echo "plist  : wrote $MACOPS_PLIST_PATH"
+launchctl bootout "gui/$(id -u)/$MACOPS_LABEL" 2>/dev/null || true
+launchctl bootstrap "gui/$(id -u)" "$MACOPS_PLIST_PATH"
+sleep 1
+if launchctl print "gui/$(id -u)/$MACOPS_LABEL" >/dev/null 2>&1; then
+  echo "launchd: $MACOPS_LABEL loaded"
+else
+  echo "WARN: $MACOPS_LABEL may not have loaded; check $LOGS_DIR/mcp-relay-macops.console.log" >&2
+fi
+
 # 6. Credentials (printed ONCE, at key creation only)
 EFFECTIVE_PORT="$(node -e 'const fs=require("fs");process.stdout.write(String(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).port))' "$CONFIG_PATH")"
 EFFECTIVE_BIND="$(node -e 'const fs=require("fs");process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).bind)' "$CONFIG_PATH")"
@@ -159,9 +277,34 @@ else
   echo "re-run install.sh to generate a new one (consumers will need the new key)."
 fi
 
+# 6b. mac-ops credentials (printed ONCE, at key creation only)
+if [ "$MACOPS_KEY_CREATED" = "1" ]; then
+  EFFECTIVE_MACOPS_KEY="$(node -e 'const fs=require("fs");process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).key)' "$CONFIG_MACOPS_PATH")"
+  echo
+  echo "== mac-ops relay is running (port $MACOPS_PORT) =="
+  echo
+  echo "YOUR MAC-OPS KEY (printed ONLY ONCE — stored in $CONFIG_MACOPS_PATH, mode 600):"
+  echo
+  echo "  $EFFECTIVE_MACOPS_KEY"
+  echo
+  echo "Consumer env snippet (separate from the Xcode relay credentials):"
+  echo
+  if [ "$EFFECTIVE_BIND" = "127.0.0.1" ]; then
+    echo "  # bound to loopback: replace MAC_LAN_IP with the Mac's VLAN IP"
+    echo "  MAC_OPS_RELAY_URL=ws://MAC_LAN_IP:$MACOPS_PORT"
+  else
+    echo "  MAC_OPS_RELAY_URL=ws://$EFFECTIVE_BIND:$MACOPS_PORT"
+  fi
+  echo "  MAC_OPS_RELAY_KEY=$EFFECTIVE_MACOPS_KEY"
+fi
+
 echo
 echo "Notes:"
 echo "  - Xcode must be running (mcpbridge auto-detects it; no env vars needed)."
-echo "  - Console log : $LOGS_DIR/mcp-relay.console.log"
-echo "  - Child stderr: $LOGS_DIR/mcp-relay.stderr.log"
-echo "  - Unload     : launchctl bootout gui/\$(id -u)/$LABEL"
+echo "  - mac-ops is allowlist-only: xcode_cleanup + git tools pinned to the"
+echo "    repo in $MACOPS_OPS_CONFIG_PATH. No free-form commands."
+echo "  - Console logs : $LOGS_DIR/mcp-relay.console.log, $LOGS_DIR/mcp-relay-macops.console.log"
+echo "  - mac-ops audit: $LOGS_DIR/mac-ops.log (JSONL, every invocation)"
+echo "  - Child stderr: $LOGS_DIR/mcp-relay.stderr.log, $LOGS_DIR/mcp-relay-macops.stderr.log"
+echo "  - Uninstall    : uninstall.sh (removes both agents, configs, keys, logs)"
+echo "  - Unload       : launchctl bootout gui/\$(id -u)/$LABEL (and $MACOPS_LABEL)"

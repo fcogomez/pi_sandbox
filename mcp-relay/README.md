@@ -1,7 +1,12 @@
 # mcp-relay (M1.2)
 
-Relays the Mac's Xcode MCP server (`xcrun mcpbridge`, stdio) to consumers on
-the Unraid LAN over WebSocket with bearer auth.
+Relays Mac services to consumers on the Unraid LAN over WebSocket with
+bearer auth. Two instances:
+
+- **Xcode bridge** (port 3129): `xcrun mcpbridge` (stdio) — Xcode tools.
+- **mac-ops** (port 3130): `node mac-ops.mjs` (stdio) — allowlist operations
+  only: Xcode artifact cleanup + git tools pinned to one repo. No free-form
+  command execution.
 
 ```
                  Unraid (this image)                                Mac Mini
@@ -10,7 +15,8 @@ the Unraid LAN over WebSocket with bearer auth.
    │ pi      ──stdio(NDJSON)──► (same shim)      │ WS  │    │  Bearer auth on upgrade             │
    │                                             │ ◄──► │    │  1 connection = 1 child            │
    │ env: MCP_RELAY_URL + MCP_RELAY_KEY          │     │    ▼                                     │
-   └────────────────────────────────────────────┘     │  xcrun mcpbridge ──► Xcode (running app)  │
+   │   (or MAC_OPS_RELAY_URL/KEY on 3130)        │     │  xcrun mcpbridge / node mac-ops.mjs      │
+   └────────────────────────────────────────────┘     │    ──► Xcode  /  pinned git repo         │
               VLAN only (no internet exposure)        └──────────────────────────────────────────┘
 ```
 
@@ -23,9 +29,11 @@ needs **no env vars** (it auto-detects the running Xcode).
 
 | File | Runs where | Role |
 |---|---|---|
-| `relay.mjs` | Mac (launchd) | WS server; per-connection `xcrun mcpbridge` child; child stderr → log file only |
+| `relay.mjs` | Mac (launchd) | WS server; per-connection bridge child; child stderr → log file only |
+| `mac-ops.mjs` | Mac (bridge child of 2nd relay) | Allowlist MCP server: `xcode_cleanup` + pinned git tools (no shell, closed subcommand set) |
 | `remote-stdio.mjs` | Unraid (any node host/container) | stdio MCP ↔ WS shim; env config only |
-| `install.sh` | Mac | node check, `npm ci`, config + key generation, launchd agent |
+| `install.sh` | Mac | node check, `npm ci`, config + key generation, both launchd agents |
+| `uninstall.sh` | Mac | Removes both agents, install dir, configs/keys, logs (interactive confirm) |
 | `test/` | anywhere (node ≥ 20) | `node --test` suite against `test/fake-mcpbridge.mjs` (no Xcode, no LAN) |
 
 ## Security model
@@ -48,24 +56,56 @@ needs **no env vars** (it auto-detects the running Xcode).
   `ws://` inside a trusted VLAN. If the network is ever untrusted, put
   `stunnel` (or a TLS-terminating proxy) in front of the relay port and point
   consumers at `wss://` — the shim already accepts `wss://` URLs.
+- **mac-ops is an allowlist, not a shell.** Its tools are a closed set with
+  fixed commands spawned as argv (never a shell string):
+  - `xcode_cleanup` deletes only `~/Library/Developer/Xcode/DerivedData` and
+    the per-user temp `ActionArtifacts` dir; each path is `realpath`-resolved
+    and must stay under its allowed root before deletion.
+  - `git_*` tools run with cwd pinned to the repo in
+    `~/Library/Application Support/mcp-relay/mac-ops.json`; subcommands are
+    fixed (`status/log/diff/branch/remote/fetch/checkout/pull/push`); branch
+    names are regex-validated; `pull` is `--ff-only`; push is never `--force`;
+    no `git config`, no remote mutation, no credential handling.
+  - Every mac-ops invocation is appended as JSONL to
+    `~/Library/Logs/mac-ops.log` (audit trail).
+- **Separate keys.** Each relay instance has its own bearer key
+  (`config.json` / `config-macops.json`), so revoking one does not touch the
+  other.
 
 ## Mac install (one-time)
 
 ```sh
 cd mcp-relay            # repo checkout on the Mac
-./install.sh            # loopback default
+./install.sh            # loopback default; installs BOTH instances
 # or, to expose on the VLAN:
 ./install.sh --bind <MAC_VLAN_IP> [--port N]
+# point mac-ops at a repo (required on first install; kept on re-runs):
+./install.sh --repo /path/to/repo
 ```
 
-`install.sh` prints the key once and a ready-to-paste consumer env snippet.
-Xcode must be running for tools to be available; with Xcode closed,
-`initialize` returns a JSON-RPC error and the child exits (clean failure,
-surfaced to the consumer as a WS close with code 4500).
+`install.sh` installs and reloads two launchd agents: `com.pi.mcp-relay`
+(port 3129 → `xcrun mcpbridge`) and `com.pi.mcp-relay-macops` (port 3130 →
+`node mac-ops.mjs`, with its own key and logs). It prints each key **once**
+and ready-to-paste consumer env snippets. Xcode must be running for the
+Xcode tools to be available; with Xcode closed, `initialize` returns a
+JSON-RPC error and the child exits (clean failure, surfaced to the consumer
+as a WS close with code 4500).
 
-Re-run is idempotent: existing config (and key) are kept; the launchd agent
-`com.pi.mcp-relay` (KeepAlive + RunAtLoad) is rewritten and reloaded. Console
-log: `~/Library/Logs/mcp-relay.console.log`.
+Re-run is idempotent: existing configs (and keys) are kept; both launchd
+agents are rewritten and reloaded; `mac-ops.json` (repo path) is kept unless
+`--repo` is passed again. Console logs: `~/Library/Logs/mcp-relay.console.log`,
+`~/Library/Logs/mcp-relay-macops.console.log`.
+
+## Uninstall
+
+```sh
+cd mcp-relay
+./uninstall.sh          # asks for "yes"; removes exactly what install.sh created
+```
+
+Removes both launchd agents + plists, the install dir (`~/mcp-relay`),
+`~/Library/Application Support/mcp-relay/` (configs **and keys** — consumers
+break until re-install), and the log files. Touches nothing else.
 
 ## Consumer wiring
 
@@ -111,6 +151,20 @@ entry into
 Equivalent manual setup inside a session host: `pi mcp add xcode-tools --env
 MCP_RELAY_URL='${MCP_RELAY_URL}' --env MCP_RELAY_KEY='${MCP_RELAY_KEY}' --
 node /opt/mcp-relay/remote-stdio.mjs`, then `/reload`.
+
+### (c) mac-ops (port 3130)
+
+Same shim, second instance, its own key:
+
+```toml
+[mcp_servers.mac-ops]
+command = "node"
+args = ["/path/to/pi-sandbox/mcp-relay/remote-stdio.mjs"]
+env = { MAC_OPS_RELAY_URL = "ws://<mac-host>:3130", MAC_OPS_RELAY_KEY = "*** mac-ops key>" }
+```
+
+pi: a second `mcp.json` entry of the same shape (env `MAC_OPS_RELAY_URL` /
+`MAC_OPS_RELAY_KEY`).
 
 ## Tests
 
