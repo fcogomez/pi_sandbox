@@ -60,6 +60,8 @@ PORT=3129
 MACOPS_PORT=3130
 BIND=""
 MACOPS_BIND=""
+BIND_EXPLICIT=0
+PORT_EXPLICIT=0
 
 usage() {
   sed -n '2,34p' "$0" | sed 's/^# \{0,1\}//'
@@ -68,8 +70,8 @@ usage() {
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --bind)        BIND="${2:?--bind needs a value}"; shift 2 ;;
-    --port)        PORT="${2:?--port needs a value}"; shift 2 ;;
+    --bind)        BIND="${2:?--bind needs a value}"; BIND_EXPLICIT=1; shift 2 ;;
+    --port)        PORT="${2:?--port needs a value}"; PORT_EXPLICIT=1; shift 2 ;;
     --macops-port) MACOPS_PORT="${2:?--macops-port needs a value}"; shift 2 ;;
     --macops-bind) MACOPS_BIND="${2:?--macops-bind needs a value}"; shift 2 ;;
     -h|--help)     usage 0 ;;
@@ -136,7 +138,20 @@ mkdir -p "$CONFIG_DIR"
 CFG="$CONFIG_DIR/config.json"
 KEY=""
 if [ -f "$CFG" ]; then
-  echo "config : kept existing $CFG"
+  if [ "$BIND_EXPLICIT" -eq 1 ] || [ "$PORT_EXPLICIT" -eq 1 ]; then
+    "$NODE_BIN" -e '
+      const fs = require("node:fs");
+      const p = process.argv[1];
+      const cfg = JSON.parse(fs.readFileSync(p, "utf8"));
+      // argv: 1=path 2=port 3=portExplicit 4=bind 5=bindExplicit
+      if (process.argv[3] === "1") cfg.port = Number(process.argv[2]);
+      if (process.argv[5] === "1") cfg.bind = process.argv[4];
+      fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + "\n");
+    ' "$CFG" "$PORT" "$PORT_EXPLICIT" "$BIND" "$BIND_EXPLICIT"
+    echo "config : kept key, updated port/bind in $CFG"
+  else
+    echo "config : kept existing $CFG"
+  fi
 else
   KEY=$("$NODE_BIN" -e 'console.log(require("node:crypto").randomBytes(32).toString("base64url"))')
   printf '{"port":%s,"bind":"%s","key":"%s","debug":false}\n' "$PORT" "$BIND" "$KEY" > "$CFG"
@@ -152,7 +167,18 @@ fi
 MACOPS_CFG="$CONFIG_DIR/config-macops.json"
 MACOPS_KEY=""
 if [ -f "$MACOPS_CFG" ]; then
-  echo "config : kept existing $MACOPS_CFG"
+  if [ "$BIND_EXPLICIT" -eq 1 ]; then
+    "$NODE_BIN" -e '
+      const fs = require("node:fs");
+      const p = process.argv[1];
+      const cfg = JSON.parse(fs.readFileSync(p, "utf8"));
+      cfg.bind = process.argv[2];
+      fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + "\n");
+    ' "$MACOPS_CFG" "$BIND"
+    echo "config : kept key, updated bind in $MACOPS_CFG (explicit --bind applies to both instances)"
+  else
+    echo "config : kept existing $MACOPS_CFG"
+  fi
 else
   MACOPS_KEY=$("$NODE_BIN" -e 'console.log(require("node:crypto").randomBytes(32).toString("base64url"))')
   # Bind: explicit --macops-bind > explicit --bind > inherit the Xcode
