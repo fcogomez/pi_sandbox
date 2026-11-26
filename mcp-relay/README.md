@@ -30,7 +30,7 @@ needs **no env vars** (it auto-detects the running Xcode).
 | File | Runs where | Role |
 |---|---|---|
 | `relay.mjs` | Mac (launchd) | WS server; per-connection bridge child; child stderr → log file only |
-| `mac-ops.mjs` | Mac (bridge child of 2nd relay) | Allowlist MCP server: `xcode_cleanup` + pinned git tools (no shell, closed subcommand set) |
+| `mac-ops.mjs` | Mac (bridge child of 2nd relay) | Allowlist MCP server: `xcode_cleanup` + git tools (no shell, closed subcommand set, `repo` is a required per-call parameter) |
 | `remote-stdio.mjs` | Unraid (any node host/container) | stdio MCP ↔ WS shim; env config only |
 | `install.sh` | Mac | node check, `npm ci`, config + key generation, both launchd agents |
 | `uninstall.sh` | Mac | Removes both agents, install dir, configs/keys, logs (interactive confirm) |
@@ -61,11 +61,13 @@ needs **no env vars** (it auto-detects the running Xcode).
   - `xcode_cleanup` deletes only `~/Library/Developer/Xcode/DerivedData` and
     the per-user temp `ActionArtifacts` dir; each path is `realpath`-resolved
     and must stay under its allowed root before deletion.
-  - `git_*` tools run with cwd pinned to the repo in
-    `~/Library/Application Support/mcp-relay/mac-ops.json`; subcommands are
-    fixed (`status/log/diff/branch/remote/fetch/checkout/pull/push`); branch
-    names are regex-validated; `pull` is `--ff-only`; push is never `--force`;
-    no `git config`, no remote mutation, no credential handling.
+  - `git_*` tools take a REQUIRED `repo` parameter (absolute path) on every
+    call — validated each time (exists, is a git repo), realpath-resolved as
+    the git cwd. Nothing is pinned at install time, so the same instance
+    serves any repo on the Mac. Subcommands are fixed
+    (`status/log/diff/branch/remote/fetch/checkout/pull/push`); branch
+    names are regex-validated; `pull` is `--ff-only`; push is never
+    `--force`; no `git config`, no remote mutation, no credential handling.
   - Every mac-ops invocation is appended as JSONL to
     `~/Library/Logs/mac-ops.log` (audit trail).
 - **Separate keys.** Each relay instance has its own bearer key
@@ -76,9 +78,11 @@ needs **no env vars** (it auto-detects the running Xcode).
 
 ```sh
 cd mcp-relay            # repo checkout on the Mac
-./install.sh --repo /path/to/repo          # REQUIRED on every run
+./install.sh            # loopback default; installs BOTH instances
 # or, to expose on the VLAN:
-./install.sh --repo /path/to/repo --bind <MAC_VLAN_IP> [--port N]
+./install.sh --bind <MAC_VLAN_IP> [--port N]
+# mac-ops needs no repo config: every git tool call passes the repo path
+# itself (e.g. git_status { "repo": "/Users/<you>/github/<repo>" })
 ```
 
 `install.sh` installs and reloads two launchd agents: `com.pi.mcp-relay`
@@ -90,8 +94,8 @@ JSON-RPC error and the child exits (clean failure, surfaced to the consumer
 as a WS close with code 4500).
 
 Re-run is idempotent: existing configs (and keys) are kept; both launchd
-agents are rewritten and reloaded; `mac-ops.json` (repo path) is rewritten
-every run from the required `--repo` flag. Console logs:
+agents are rewritten and reloaded; a legacy `mac-ops.json` (from v1.0.x)
+is removed if present. Console logs:
 `~/Library/Logs/mcp-relay.console.log`, `~/Library/Logs/mcp-relay-macops.console.log`.
 
 ## Uninstall

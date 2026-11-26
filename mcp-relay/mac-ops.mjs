@@ -10,33 +10,31 @@
  * execution: every tool is a hardcoded command with validated arguments,
  * spawned without a shell (argv arrays only).
  *
- * Tools:
+ * Tools (git tools all take a REQUIRED `repo` parameter — absolute path
+ * to the git repo the call operates on; validated per call, nothing is
+ * pinned at install time):
  *   xcode_cleanup          delete Xcode build artifacts (fixed paths only)
- *   git_status             git status of the pinned repo
- *   git_log                git log --oneline
- *   git_diff               git diff --stat
- *   git_branch_list        git branch -vv
- *   git_remote             git remote -v
- *   git_fetch              git fetch --prune
- *   git_checkout           git checkout <branch>  (branch regex-validated)
- *   git_pull               git pull --ff-only
- *   git_push               git push [origin <branch>]  (branch validated;
- *                          never --force, no extra flags)
+ *   git_status             git status   {repo}
+ *   git_log                git log --oneline {repo, count?}
+ *   git_diff               git diff --stat {repo, cached?}
+ *   git_branch_list        git branch -vv {repo}
+ *   git_remote             git remote -v {repo}
+ *   git_fetch              git fetch --prune {repo}
+ *   git_checkout           git checkout <branch> {repo, branch}
+ *   git_pull               git pull --ff-only {repo}
+ *   git_push               git push [origin <branch>] {repo, branch?}
  *
  * Safety model:
- *   - git: cwd is a pinned repo path from config; subcommands are a closed
- *     set; no `git config`, no remote mutation, no credential handling.
+ *   - git: cwd is the `repo` argument, validated on EVERY call (absolute
+ *     path, exists, is a git repo). Subcommands are a closed set; no
+ *     `git config`, no remote mutation, no credential handling.
  *   - cleanup: candidate paths are derived from $HOME / the per-user
  *     temp dir, re-validated against strict prefixes BEFORE deletion.
- *   - audit: every invocation is appended as JSONL to the audit log.
+ *   - audit: every invocation (tool, repo, args, exit/size) is appended
+ *     as JSONL to the audit log.
  *
- * Config: ~/Library/Application Support/mcp-relay/mac-ops.json
- *   { "repoPath": "/Users/<you>/github/<repo>" }
- * Missing config -> server still answers initialize/tools/list (the relay
- * needs the child alive); git tools return an error result.
- *
- * Audit log: ~/Library/Logs/mac-ops.log (JSONL; args are logged — they are
- * short, validated identifiers, never secrets).
+ * Audit log: ~/Library/Logs/mac-ops.log (JSONL; args are logged — they
+ * are short, validated identifiers/paths, never secrets).
  */
 
 import { spawnSync } from "node:child_process";
@@ -45,35 +43,18 @@ import {
   existsSync,
   lstatSync,
   realpathSync,
-  readFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, isDirectory, join } from "node:path";
 import process from "node:process";
 
 const SERVER_NAME = "mac-ops";
-const SERVER_VERSION = "1.0.0";
+const SERVER_VERSION = "1.1.0";
 const PROTOCOL_VERSION = "2024-11-05";
 
-const CONFIG_PATH =
-  process.env.MAC_OPS_CONFIG ||
-  join(homedir(), "Library/Application Support/mcp-relay/mac-ops.json");
 const AUDIT_LOG =
   process.env.MAC_OPS_AUDIT_LOG ||
   join(homedir(), "Library/Logs/mac-ops.log");
-
-// ---------------------------------------------------------------------------
-// Config
-// ---------------------------------------------------------------------------
-let repoPath = null;
-try {
-  const cfg = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
-  if (typeof cfg.repoPath === "string" && cfg.repoPath.trim()) {
-    repoPath = cfg.repoPath.trim();
-  }
-} catch {
-  // Unconfigured: git tools will report "not configured".
-}
 
 function logStderr(msg) {
   process.stderr.write(JSON.stringify({ ts: new Date().toISOString(), msg }) + "\n");
@@ -187,25 +168,44 @@ function toolXcodeCleanup(args) {
 }
 
 // ---------------------------------------------------------------------------
-// git tools — pinned cwd, closed subcommand set, validated args, no shell
+// git tools — repo is a REQUIRED per-call parameter; closed subcommand set,
+// validated args, no shell
 // ---------------------------------------------------------------------------
 const BRANCH_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/;
 
-function repoCheck() {
-  if (!repoPath) {
-    return { error: `mac-ops not configured (missing ${CONFIG_PATH} with repoPath)` };
+/**
+ * Validate the per-call `repo` parameter. Returns { error } on failure or
+ * { repo } (realpath-resolved) on success.
+ */
+function validateRepo(args) {
+  const p = args && args.repo;
+  if (typeof p !== "string" || !p.trim()) {
+    return { error: "repo is required: absolute path to the git repo" };
   }
-  if (!existsSync(join(repoPath, ".git")) && !existsSync(repoPath)) {
-    return { error: `repo path does not exist: ${repoPath}` };
+  const path = p.trim();
+  if (!isAbsolute(path)) {
+    return { error: `repo must be an absolute path (got: ${path})` };
   }
-  return null;
+  let real;
+  try {
+    real = realpathSync(path);
+  } catch {
+    return { error: `repo path does not exist: ${path}` };
+  }
+  if (!isDirectory(real)) {
+    return { error: `repo path is not a directory: ${path}` };
+  }
+  if (!existsSync(join(real, ".git"))) {
+    return { error: `not a git repository (no .git): ${real}` };
+  }
+  return { repo: real };
 }
 
-function runGit(argv) {
-  const problem = repoCheck();
-  if (problem) return textResult(problem, true);
+function runGit(args, argv) {
+  const v = validateRepo(args);
+  if (v.error) return textResult(v, true);
   const r = spawnSync("git", argv, {
-    cwd: repoPath,
+    cwd: v.repo,
     encoding: "utf8",
     timeout: 120000,
     maxBuffer: 1024 * 1024,
@@ -213,9 +213,14 @@ function runGit(argv) {
   if (r.error) {
     return textResult({ error: `git failed to run: ${r.error.message}` }, true);
   }
-  audit({ tool: `git_${argv[0]}`, argv: argv.slice(1).join(" ").slice(0, 120), exit: r.status });
+  audit({
+    tool: `git_${argv[0]}`,
+    repo: v.repo,
+    argv: argv.slice(1).join(" ").slice(0, 120),
+    exit: r.status,
+  });
   return textResult({
-    repoPath,
+    repo: v.repo,
     argv: ["git", ...argv],
     exitCode: r.status,
     stdout: (r.stdout || "").slice(0, 200000),
@@ -223,8 +228,15 @@ function runGit(argv) {
   }, r.status !== 0);
 }
 
-function toolGitStatus() {
-  return runGit(["status", "--porcelain=v1", "-b"]);
+const REPO_PROP = {
+  repo: {
+    type: "string",
+    description: "Absolute path to the git repository this call operates on.",
+  },
+};
+
+function toolGitStatus(args) {
+  return runGit(args, ["status", "--porcelain=v1", "-b"]);
 }
 
 function toolGitLog(args) {
@@ -235,25 +247,25 @@ function toolGitLog(args) {
       return textResult({ error: "count must be an integer 1..100" }, true);
     }
   }
-  return runGit(["log", "--oneline", String(n)]);
+  return runGit(args, ["log", "--oneline", String(n)]);
 }
 
 function toolGitDiff(args) {
   const argv = ["diff", "--stat"];
   if (args && args.cached === true) argv.push("--cached");
-  return runGit(argv);
+  return runGit(args, argv);
 }
 
-function toolGitBranchList() {
-  return runGit(["branch", "-vv"]);
+function toolGitBranchList(args) {
+  return runGit(args, ["branch", "-vv"]);
 }
 
-function toolGitRemote() {
-  return runGit(["remote", "-v"]);
+function toolGitRemote(args) {
+  return runGit(args, ["remote", "-v"]);
 }
 
-function toolGitFetch() {
-  return runGit(["fetch", "--prune"]);
+function toolGitFetch(args) {
+  return runGit(args, ["fetch", "--prune"]);
 }
 
 function toolGitCheckout(args) {
@@ -261,21 +273,20 @@ function toolGitCheckout(args) {
   if (typeof b !== "string" || !BRANCH_RE.test(b)) {
     return textResult({ error: "invalid branch name" }, true);
   }
-  return runGit(["checkout", b]);
+  return runGit(args, ["checkout", b]);
 }
 
-function toolGitPull() {
-  return runGit(["pull", "--ff-only"]);
+function toolGitPull(args) {
+  return runGit(args, ["pull", "--ff-only"]);
 }
 
 function toolGitPush(args) {
-  if (!args) return runGit(["push"]);
-  if (args.branch === undefined) return runGit(["push"]);
+  if (!args || args.branch === undefined) return runGit(args, ["push"]);
   const b = args.branch;
   if (typeof b !== "string" || !BRANCH_RE.test(b)) {
     return textResult({ error: "invalid branch name" }, true);
   }
-  return runGit(["push", "origin", b]);
+  return runGit(args, ["push", "origin", b]);
 }
 
 // ---------------------------------------------------------------------------
@@ -299,70 +310,95 @@ const TOOLS = [
   },
   {
     name: "git_status",
-    description: "git status --porcelain=v1 -b of the pinned repo.",
-    inputSchema: { type: "object", properties: {} },
+    description: "git status --porcelain=v1 -b. repo: absolute path to the git repo.",
+    inputSchema: {
+      type: "object",
+      properties: { ...REPO_PROP },
+      required: ["repo"],
+    },
     run: toolGitStatus,
   },
   {
     name: "git_log",
-    description: "git log --oneline (count 1..100, default 20) of the pinned repo.",
+    description: "git log --oneline (count 1..100, default 20). repo: absolute path to the git repo.",
     inputSchema: {
       type: "object",
-      properties: { count: { type: "integer", minimum: 1, maximum: 100 } },
+      properties: { ...REPO_PROP, count: { type: "integer", minimum: 1, maximum: 100 } },
+      required: ["repo"],
     },
     run: toolGitLog,
   },
   {
     name: "git_diff",
-    description: "git diff --stat of the pinned repo (working tree, or --cached with cached:true).",
+    description:
+      "git diff --stat (working tree, or --cached with cached:true). repo: absolute path to the git repo.",
     inputSchema: {
       type: "object",
-      properties: { cached: { type: "boolean" } },
+      properties: { ...REPO_PROP, cached: { type: "boolean" } },
+      required: ["repo"],
     },
     run: toolGitDiff,
   },
   {
     name: "git_branch_list",
-    description: "git branch -vv of the pinned repo (local branches + upstream tracking).",
-    inputSchema: { type: "object", properties: {} },
+    description: "git branch -vv (local branches + upstream tracking). repo: absolute path to the git repo.",
+    inputSchema: {
+      type: "object",
+      properties: { ...REPO_PROP },
+      required: ["repo"],
+    },
     run: toolGitBranchList,
   },
   {
     name: "git_remote",
-    description: "git remote -v of the pinned repo.",
-    inputSchema: { type: "object", properties: {} },
+    description: "git remote -v. repo: absolute path to the git repo.",
+    inputSchema: {
+      type: "object",
+      properties: { ...REPO_PROP },
+      required: ["repo"],
+    },
     run: toolGitRemote,
   },
   {
     name: "git_fetch",
-    description: "git fetch --prune on the pinned repo.",
-    inputSchema: { type: "object", properties: {} },
+    description: "git fetch --prune. repo: absolute path to the git repo.",
+    inputSchema: {
+      type: "object",
+      properties: { ...REPO_PROP },
+      required: ["repo"],
+    },
     run: toolGitFetch,
   },
   {
     name: "git_checkout",
-    description: "git checkout <branch> on the pinned repo (branch regex-validated).",
+    description:
+      "git checkout <branch> (branch regex-validated). repo: absolute path to the git repo.",
     inputSchema: {
       type: "object",
-      properties: { branch: { type: "string" } },
-      required: ["branch"],
+      properties: { ...REPO_PROP, branch: { type: "string" } },
+      required: ["repo", "branch"],
     },
     run: toolGitCheckout,
   },
   {
     name: "git_pull",
-    description: "git pull --ff-only on the pinned repo (refuses to merge).",
-    inputSchema: { type: "object", properties: {} },
+    description: "git pull --ff-only (refuses to merge). repo: absolute path to the git repo.",
+    inputSchema: {
+      type: "object",
+      properties: { ...REPO_PROP },
+      required: ["repo"],
+    },
     run: toolGitPull,
   },
   {
     name: "git_push",
     description:
-      "git push on the pinned repo: no args pushes the current branch upstream; " +
-      "branch -> git push origin <branch>. Never --force.",
+      "git push: no branch pushes the current branch upstream; branch -> git push origin <branch>. " +
+      "Never --force. repo: absolute path to the git repo.",
     inputSchema: {
       type: "object",
-      properties: { branch: { type: "string" } },
+      properties: { ...REPO_PROP, branch: { type: "string" } },
+      required: ["repo"],
     },
     run: toolGitPush,
   },
@@ -451,4 +487,4 @@ process.stdin.on("data", (d) => {
   }
 });
 process.stdin.on("close", () => process.exit(0));
-logStderr(`${SERVER_NAME} v${SERVER_VERSION} ready (repoPath=${repoPath || "<unconfigured>"})`);
+logStderr(`${SERVER_NAME} v${SERVER_VERSION} ready (repo: per-call parameter)`);

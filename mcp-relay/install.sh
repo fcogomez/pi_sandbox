@@ -11,8 +11,9 @@
 # Defaults: ports 3129/3130, bind 127.0.0.1 (loopback only — VLAN exposure
 # requires the explicit --bind flag; see mcp-relay/README.md security model).
 #
-# Flags: --port N (instance 1), --bind IP (both), --repo PATH (mac-ops git
-# repo; REQUIRED on every run — there is no default, none is kept).
+# Flags: --port N (instance 1), --bind IP (both).
+# mac-ops takes the target repo as a per-call `repo` parameter — nothing
+# repo-specific is configured at install time.
 set -euo pipefail
 
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -28,8 +29,6 @@ CONFIG_MACOPS_PATH="$CONFIG_DIR/config-macops.json"
 MACOPS_OPS_CONFIG_PATH="$CONFIG_DIR/mac-ops.json"
 MACOPS_PLIST_PATH="$HOME/Library/LaunchAgents/com.pi.mcp-relay-macops.plist"
 MACOPS_LABEL="com.pi.mcp-relay-macops"
-REPO_PATH=""
-REPO_SET=0
 
 PORT=3129
 BIND="127.0.0.1"
@@ -40,17 +39,9 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --port) PORT="${2:?--port requires a value}"; PORT_SET=1; shift 2 ;;
     --bind) BIND="${2:?--bind requires a value}"; BIND_SET=1; shift 2 ;;
-    --repo) REPO_PATH="${2:?--repo requires a value}"; REPO_SET=1; shift 2 ;;
-    *) echo "Unknown flag: $1 (usage: install.sh --repo PATH [--port N] [--bind IP])" >&2; exit 2 ;;
+    *) echo "Unknown flag: $1 (usage: install.sh [--port N] [--bind IP])" >&2; exit 2 ;;
   esac
 done
-
-# --repo is required on every run: it is the pinned git repo for mac-ops.
-# No default, no carry-over — the value is always explicit at install time.
-if [ "$REPO_SET" != "1" ]; then
-  echo "ERROR: --repo PATH is required on every run: ./install.sh --repo /path/to/repo [--port N] [--bind IP]" >&2
-  exit 2
-fi
 
 echo "== mcp-relay install =="
 echo "source : $SRC_DIR"
@@ -58,7 +49,6 @@ echo "target : $DEST_DIR"
 echo "config : $CONFIG_PATH"
 echo "port   : $PORT (xcode) / $MACOPS_PORT (mac-ops)"
 echo "bind   : $BIND"
-echo "repo   : $REPO_PATH"
 
 # 0. Guard: the mac-ops bridge command is passed as whitespace-split argv;
 #    a DEST_DIR containing spaces would break it.
@@ -144,17 +134,12 @@ else
 fi
 chmod 600 "$CONFIG_MACOPS_PATH"
 
-# mac-ops server config: pinned repo. Rewritten on every run with the
-# explicitly passed --repo value (required — see flag validation above).
-cat > "$MACOPS_OPS_CONFIG_PATH" <<EOF
-{
-  "repoPath": "$REPO_PATH"
-}
-EOF
-chmod 600 "$MACOPS_OPS_CONFIG_PATH"
-echo "config : wrote $MACOPS_OPS_CONFIG_PATH (repoPath=$REPO_PATH)"
-if [ ! -d "$REPO_PATH/.git" ]; then
-  echo "WARN   : $REPO_PATH is not a git repo yet — git tools will error until it exists." >&2
+# mac-ops v1.1.0 takes the repo as a per-call parameter: no repo config
+# file. Remove a legacy mac-ops.json left by older installs (v1.0.x), which
+# the new server ignores anyway.
+if [ -f "$MACOPS_OPS_CONFIG_PATH" ]; then
+  rm -f "$MACOPS_OPS_CONFIG_PATH"
+  echo "config : removed legacy $MACOPS_OPS_CONFIG_PATH (repo is now a per-call parameter)"
 fi
 
 # 4. launchd agent
