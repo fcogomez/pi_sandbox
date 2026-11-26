@@ -49,7 +49,7 @@ import { isAbsolute, join } from "node:path";
 import process from "node:process";
 
 const SERVER_NAME = "mac-ops";
-const SERVER_VERSION = "1.1.0";
+const SERVER_VERSION = "1.1.1";
 const PROTOCOL_VERSION = "2024-11-05";
 
 const AUDIT_LOG =
@@ -131,7 +131,16 @@ function cleanupOne(kind) {
   } catch {
     return { target: kind, state: "skipped", reason: "cannot resolve path", path };
   }
-  if (!real.startsWith(allowedRoot + "/") && real !== allowedRoot) {
+  // Resolve the root the same way — on macOS /var is a symlink to
+  // /private/var, so the unresolved prefix would never match the real path.
+  // The root is a fixed constant (not user input), so this is safe.
+  let realRoot;
+  try {
+    realRoot = realpathSync(allowedRoot);
+  } catch {
+    realRoot = allowedRoot;
+  }
+  if (!real.startsWith(realRoot + "/") && real !== realRoot) {
     logStderr(`cleanup REFUSED: ${real} escapes ${allowedRoot}`);
     return { target: kind, state: "refused", reason: "path escaped allowed root", path: real };
   }
